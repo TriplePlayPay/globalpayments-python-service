@@ -416,7 +416,7 @@ xmltodict = ">=0.9.0"
 
 [package.source]
 type = "git"
-url = "ssh://git@github.com/TriplePlayPay/stuff.git"
+url = "https://github.com/TriplePlayPay/stuff.git"
 reference = "public"
 resolved_reference = "84c9178a1106b65534d021005e25e53da4267085"
 
@@ -1221,4 +1221,4 @@ multidict = ">=4.0"
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.11,<4"
-content-hash = "a405a26d7dfb73ef742f126592b7b796f4a1aaf5dba64259a54e0e2f69e41700"
+content-hash = "6bc15d60d4cf52f6a2b915406fbe696a71a2e60213f0ca0ab66f322c7b2b6ec0"

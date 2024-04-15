@@ -23,7 +23,8 @@ packaging = "24.0"
 pluggy = "1.4.0"
 pytest = "8.1.1"
 #globalpayments-python-sdk = { git = "ssh://git@github.com/TriplePlayPay/globalpayments-python-sdk.git", branch = "main" }
-globalpayments-api = { git = "ssh://git@github.com/TriplePlayPay/stuff.git", branch = "public" }
+#globalpayments-api = { git = "ssh://git@github.com/TriplePlayPay/stuff.git", branch = "public" }
+globalpayments-api = { git = "https://github.com/TriplePlayPay/stuff.git", branch = "public" }
 python-json-logger = "^2.0.7"
 
 
