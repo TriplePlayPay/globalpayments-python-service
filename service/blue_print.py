@@ -93,7 +93,7 @@ async def authorize(request):
 
 @bp.post("/settle")
 async def settle(request):
-    request_input = ignore_properties(SaleRequestInput, request.json)
+    request_input = ignore_properties(RequestInput, request.json)
     if request.app.ctx.echo == True:
         return json(dumps(request_input, cls=EnhancedJSONEncoder))
 
