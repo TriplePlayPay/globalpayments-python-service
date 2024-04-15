@@ -26,6 +26,7 @@ pytest = "8.1.1"
 #globalpayments-api = { git = "ssh://git@github.com/TriplePlayPay/stuff.git", branch = "public" }
 globalpayments-api = { git = "https://github.com/TriplePlayPay/stuff.git", branch = "public" }
 python-json-logger = "^2.0.7"
+sanic-ext = "^23.12.0"
 
 
 [tool.poetry.group.dev]
