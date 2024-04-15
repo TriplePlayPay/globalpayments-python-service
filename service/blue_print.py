@@ -1,0 +1,123 @@
+from contextlib import suppress
+from dataclasses import dataclass
+from json import dumps
+from typing import cast
+from uuid import UUID
+
+from sanic import json, Request
+from sanic.blueprints import Blueprint
+
+from service.business.functions import OnlinePayments, card_data, CreditCardDataDataclass
+from service.business.params import HeartlandParams
+from service.json_util import ignore_properties, EnhancedJSONEncoder
+
+bp = Blueprint("Heartland", url_prefix="/api/heartland")
+
+
+@dataclass
+class RequestInput:
+    params: HeartlandParams
+    reference: UUID
+    qa: bool
+
+    def __post_init__(self):
+        if not isinstance(self.params, HeartlandParams):
+            self.params = ignore_properties(HeartlandParams, self.params)
+        if self.reference and not isinstance(self.reference, UUID):
+            with suppress(ValueError):
+                self.reference = UUID(cast(str, self.reference))
+
+
+@dataclass
+class SaleRequestInput(RequestInput):
+    amount: float
+    credit_card_data: CreditCardDataDataclass
+
+    def __post_init__(self):
+        super().__post_init__()
+        if not isinstance(self.credit_card_data, CreditCardDataDataclass):
+            self.credit_card_data = \
+                ignore_properties(CreditCardDataDataclass, self.credit_card_data)
+
+
+@dataclass
+class RefundRequestInput(RequestInput):
+    heartland_transaction_id: str
+    payment_transaction_amount: str
+    amount: float | None = None
+
+
+@bp.post("/sale")
+async def sale(request: Request):
+    request_input = ignore_properties(SaleRequestInput, request.json)
+    if request.app.ctx.echo == True:
+        return json(dumps(request_input, cls=EnhancedJSONEncoder))
+
+    result = OnlinePayments(
+        params=request_input.params,
+        reference=request_input.reference,
+        qa=request_input.qa
+    ).sale(
+        amount=request_input.amount,
+        card=card_data(
+            number=request_input.credit_card_data.number,
+            exp_month=request_input.credit_card_data.exp_month,
+            exp_year=request_input.credit_card_data.exp_year,
+            cvn=request_input.credit_card_data.cvn,
+        )
+    )
+    return json(result)
+
+
+@bp.post("/authorize")
+async def authorize(request):
+    request_input = ignore_properties(SaleRequestInput, request.json)
+    if request.app.ctx.echo == True:
+        return json(dumps(request_input, cls=EnhancedJSONEncoder))
+
+    result = OnlinePayments(
+        params=request_input.params,
+        reference=request_input.reference,
+        qa=request_input.qa
+    ).authorize(
+        amount=request_input.amount,
+        card=card_data(
+            number=request_input.credit_card_data.number,
+            exp_month=request_input.credit_card_data.exp_month,
+            exp_year=request_input.credit_card_data.exp_year,
+            cvn=request_input.credit_card_data.cvn,
+        )
+    )
+    return json(result)
+
+
+@bp.post("/settle")
+async def settle(request):
+    request_input = ignore_properties(SaleRequestInput, request.json)
+    if request.app.ctx.echo == True:
+        return json(dumps(request_input, cls=EnhancedJSONEncoder))
+
+    OnlinePayments(
+        params=request_input.params,
+        reference=request_input.reference,
+        qa=request_input.qa
+    ).settle()
+    return json({"settle_status": True})
+
+
+@bp.post("/refund")
+async def refund(request):
+    request_input = ignore_properties(RefundRequestInput, request.json)
+    if request.app.ctx.echo == True:
+        return json(dumps(request_input, cls=EnhancedJSONEncoder))
+
+    result = OnlinePayments(
+        params=request_input.params,
+        reference=request_input.reference,
+        qa=request_input.qa
+    ).refund(
+        heartland_transaction_id=request_input.heartland_transaction_id,
+        payment_transaction_amount=request_input.payment_transaction_amount,
+        amount=request_input.amount,
+    )
+    return json(result)
