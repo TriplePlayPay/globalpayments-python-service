@@ -19,7 +19,7 @@ class CreditCardDataDataclass:
     number: str
     exp_month: str
     exp_year: str
-    cvn: Union[str, None]
+    cvn: Union[str, None] = None
 
 
 def card_data(
@@ -131,7 +131,7 @@ class OnlinePayments:
     ):
         transaction = Transaction.from_id(heartland_transaction_id)
 
-        if amount is not None and float(payment_transaction_amount) > amount:
+        if amount is not None and float(payment_transaction_amount) != amount:
             result = (
                 transaction.refund(amount)
                 .with_currency(self.params.constants.default_currency)

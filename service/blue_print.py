@@ -48,7 +48,7 @@ class RefundRequestInput(RequestInput):
 
 
 @bp.post("/sale")
-async def sale(request: Request):
+def sale(request: Request):
     request_input = ignore_properties(SaleRequestInput, request.json)
     if getattr(request.app.ctx, "echo", False):
         return json(dumps(request_input, cls=EnhancedJSONEncoder))
@@ -70,7 +70,7 @@ async def sale(request: Request):
 
 
 @bp.post("/authorize")
-async def authorize(request):
+def authorize(request):
     request_input = ignore_properties(SaleRequestInput, request.json)
     if getattr(request.app.ctx, "echo", False):
         return json(dumps(request_input, cls=EnhancedJSONEncoder))
@@ -92,7 +92,7 @@ async def authorize(request):
 
 
 @bp.post("/settle")
-async def settle(request):
+def settle(request):
     request_input = ignore_properties(RequestInput, request.json)
     if getattr(request.app.ctx, "echo", False):
         return json(dumps(request_input, cls=EnhancedJSONEncoder))
@@ -106,7 +106,7 @@ async def settle(request):
 
 
 @bp.post("/refund")
-async def refund(request):
+def refund(request):
     request_input = ignore_properties(RefundRequestInput, request.json)
     if getattr(request.app.ctx, "echo", False):
         return json(dumps(request_input, cls=EnhancedJSONEncoder))
