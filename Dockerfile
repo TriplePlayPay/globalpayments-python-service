@@ -9,7 +9,15 @@ RUN poetry config virtualenvs.create false --local
 
 COPY poetry.lock .
 COPY pyproject.toml .
-RUN poetry install
+#RUN poetry install
+RUN \
+    apk add --update --no-cache \
+      --virtual .tmp-build-deps \
+      gcc libc-dev linux-headers postgresql-dev libffi-dev && \
+    pip install poetry && \
+    poetry config virtualenvs.create false --local && \
+    poetry install && \
+    apk del .tmp-build-deps
 COPY app.py .
 COPY . .
 #USER 405
