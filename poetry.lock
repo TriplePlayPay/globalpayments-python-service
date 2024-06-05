@@ -416,7 +416,7 @@ xmltodict = ">=0.9.0"
 
 [package.source]
 type = "git"
-url = "ssh://git@github.com/TriplePlayPay/globalpayments-python-sdk.git"
+url = "https://github.com/TriplePlayPay/globalpayments-python-sdk.git"
 reference = "main"
 resolved_reference = "0dbdb55720dfe7ec873c7bcb673f948a04ea82b3"
 
@@ -1315,4 +1315,4 @@ multidict = ">=4.0"
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.11,<4"
-content-hash = "6e6ddd28ae2f1cebc9297d43dbd8c76a08b3e896588b287d4785f8a38d068a88"
+content-hash = "a9df67840ef77019cbdb8f4f166c99cb31edda86d3d7e2e145d5f3334f256a5b"

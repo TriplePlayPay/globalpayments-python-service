@@ -126,7 +126,7 @@ def refund(request):
 @bp.post("/force/refund")
 async def force_refund(request):
     request_input = ignore_properties(RefundRequestInput, request.json)
-    if request.app.ctx.echo == True:
+    if getattr(request.app.ctx, "echo", False):
         return json(dumps(request_input, cls=EnhancedJSONEncoder))
 
     result = OnlinePayments(
