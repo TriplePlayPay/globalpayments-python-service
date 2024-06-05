@@ -121,3 +121,21 @@ def refund(request):
         amount=request_input.amount,
     )
     return json(result)
+
+
+@bp.post("/force/refund")
+async def force_refund(request):
+    request_input = ignore_properties(RefundRequestInput, request.json)
+    if request.app.ctx.echo == True:
+        return json(dumps(request_input, cls=EnhancedJSONEncoder))
+
+    result = OnlinePayments(
+        params=request_input.params,
+        reference=request_input.reference,
+        qa=request_input.qa
+    ).force_refund(
+        heartland_transaction_id=request_input.heartland_transaction_id,
+        payment_transaction_amount=request_input.payment_transaction_amount,
+        amount=request_input.amount,
+    )
+    return json(result)

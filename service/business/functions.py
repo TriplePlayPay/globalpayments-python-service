@@ -151,3 +151,17 @@ class OnlinePayments:
                 )
 
         return self.__results(result)
+
+    def force_refund(
+        self,
+        heartland_transaction_id: str,
+        payment_transaction_amount: str,
+        amount: Union[float, None]
+    ):
+        transaction = Transaction.from_id(heartland_transaction_id)
+        result = (
+            transaction.refund(float(payment_transaction_amount))
+            .with_currency(self.params.constants.default_currency)
+            .execute()
+        )
+        return self.__results(result)
