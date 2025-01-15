@@ -123,6 +123,40 @@ def refund(request):
     return json(result)
 
 
+@bp.post("/reversal")
+async def reversal(request):
+    request_input = ignore_properties(RefundRequestInput, request.json)
+    if getattr(request.app.ctx, "echo", False):
+        return json(dumps(request_input, cls=EnhancedJSONEncoder))
+
+    result = OnlinePayments(
+        params=request_input.params,
+        reference=request_input.reference,
+        qa=request_input.qa
+    ).reversal(
+        heartland_transaction_id=request_input.heartland_transaction_id,
+        payment_transaction_amount=request_input.payment_transaction_amount,
+    )
+    return json(result)
+
+
+@bp.post("/void")
+async def void(request):
+    request_input = ignore_properties(RefundRequestInput, request.json)
+    if getattr(request.app.ctx, "echo", False):
+        return json(dumps(request_input, cls=EnhancedJSONEncoder))
+
+    result = OnlinePayments(
+        params=request_input.params,
+        reference=request_input.reference,
+        qa=request_input.qa
+    ).void(
+        heartland_transaction_id=request_input.heartland_transaction_id,
+        payment_transaction_amount=request_input.payment_transaction_amount,
+    )
+    return json(result)
+
+
 @bp.post("/force/refund")
 async def force_refund(request):
     request_input = ignore_properties(RefundRequestInput, request.json)

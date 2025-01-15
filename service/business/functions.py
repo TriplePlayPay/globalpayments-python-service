@@ -165,3 +165,29 @@ class OnlinePayments:
             .execute()
         )
         return self.__results(result)
+
+    def reversal(
+        self,
+        heartland_transaction_id: str,
+        payment_transaction_amount: str
+    ):
+        transaction = Transaction.from_id(heartland_transaction_id)
+        result = (
+            transaction.reverse(float(payment_transaction_amount))
+            .with_currency(self.params.constants.default_currency)
+            .execute()
+        )
+        return self.__results(result)
+
+    def void(
+        self,
+        heartland_transaction_id: str,
+        payment_transaction_amount: str
+    ):
+        transaction = Transaction.from_id(heartland_transaction_id)
+        result = (
+            transaction.void()
+            .with_currency(self.params.constants.default_currency)
+            .execute()
+        )
+        return self.__results(result)
