@@ -166,6 +166,19 @@ class OnlinePayments:
         )
         return self.__results(result)
 
+    def capture(
+        self,
+        heartland_transaction_id: str,
+        payment_transaction_amount: str
+    ):
+        transaction = Transaction.from_id(heartland_transaction_id)
+        result = (
+            transaction.capture(float(payment_transaction_amount))
+            .with_currency(self.params.constants.default_currency)
+            .execute()
+        )
+        return self.__results(result)
+
     def reversal(
         self,
         heartland_transaction_id: str,

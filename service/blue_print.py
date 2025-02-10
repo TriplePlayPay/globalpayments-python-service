@@ -47,6 +47,12 @@ class RefundRequestInput(RequestInput):
     amount: float | None = None
 
 
+@dataclass
+class CaptureRequestInput(RequestInput):
+    heartland_transaction_id: str
+    payment_transaction_amount: str
+
+
 @bp.post("/sale")
 def sale(request: Request):
     request_input = ignore_properties(SaleRequestInput, request.json)
@@ -102,6 +108,23 @@ def settle(request):
         reference=request_input.reference,
         qa=request_input.qa
     ).settle()
+    return json({"settle_status": True})
+
+
+@bp.post("/capture")
+def capture(request):
+    request_input = ignore_properties(CaptureRequestInput, request.json)
+    if getattr(request.app.ctx, "echo", False):
+        return json(dumps(request_input, cls=EnhancedJSONEncoder))
+
+    OnlinePayments(
+        params=request_input.params,
+        reference=request_input.reference,
+        qa=request_input.qa
+    ).capture(
+        heartland_transaction_id=request_input.heartland_transaction_id,
+        payment_transaction_amount=request_input.payment_transaction_amount,
+    )
     return json({"settle_status": True})
 
 
