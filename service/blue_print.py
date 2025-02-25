@@ -1,7 +1,7 @@
 from contextlib import suppress
 from dataclasses import dataclass
 from json import dumps
-from typing import cast
+from typing import cast, Union
 from uuid import UUID
 
 from sanic import json, Request
@@ -31,6 +31,7 @@ class RequestInput:
 @dataclass
 class SaleRequestInput(RequestInput):
     amount: float
+    zip_code: Union[str, None]
     credit_card_data: CreditCardDataDataclass
 
     def __post_init__(self):
@@ -70,7 +71,8 @@ def sale(request: Request):
             exp_month=request_input.credit_card_data.exp_month,
             exp_year=request_input.credit_card_data.exp_year,
             cvn=request_input.credit_card_data.cvn,
-        )
+        ),
+        zip_code=request_input.zip_code
     )
     return json(result)
 
@@ -92,7 +94,8 @@ def authorize(request):
             exp_month=request_input.credit_card_data.exp_month,
             exp_year=request_input.credit_card_data.exp_year,
             cvn=request_input.credit_card_data.cvn,
-        )
+        ),
+        zip_code=request_input.zip_code
     )
     return json(result)
 

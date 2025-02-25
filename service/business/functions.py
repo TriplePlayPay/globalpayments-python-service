@@ -20,6 +20,7 @@ class CreditCardDataDataclass:
     exp_month: str
     exp_year: str
     cvn: Union[str, None] = None
+    zip_code: Union[str, None] = None
 
 
 def card_data(
@@ -43,6 +44,12 @@ class AddressDataclass:
 def address_data(street: str, zipcode: str) -> Address:
     address = Address()
     address.street_address_1 = street
+    address.postal_code = zipcode
+    return address
+
+
+def get_zip_code_address(zipcode: str) -> Address:
+    address = Address()
     address.postal_code = zipcode
     return address
 
@@ -71,23 +78,44 @@ class OnlinePayments:
                 fields[key] = value
         return fields
 
-    def sale(self, amount: float, card: CreditCardData):
+    def sale(self, amount: float, card: CreditCardData, zip_code=None):
+        zip_code_address = None
+        if zip_code:
+            zip_code_address = get_zip_code_address(zip_code)
         if card.cvn:
-            transaction = (
-                card.charge(amount)
-                .with_cvc(card.cvn)
-                # .with_address(address)
-                .with_currency(self.params.constants.default_currency)
-                .with_client_transaction_id(self.reference)
-                .execute()
-            )
+            if zip_code_address:
+                transaction = (
+                    card.charge(amount)
+                    .with_cvc(card.cvn)
+                    .with_address(zip_code_address)
+                    .with_currency(self.params.constants.default_currency)
+                    .with_client_transaction_id(self.reference)
+                    .execute()
+                )
+            else:
+                transaction = (
+                    card.charge(amount)
+                    .with_cvc(card.cvn)
+                    .with_currency(self.params.constants.default_currency)
+                    .with_client_transaction_id(self.reference)
+                    .execute()
+                )
         else:
-            transaction = (
-                card.charge(amount)
-                .with_currency(self.params.constants.default_currency)
-                .with_client_transaction_id(self.reference)
-                .execute()
-            )
+            if zip_code_address:
+                transaction = (
+                    card.charge(amount)
+                    .with_address(zip_code_address)
+                    .with_currency(self.params.constants.default_currency)
+                    .with_client_transaction_id(self.reference)
+                    .execute()
+                )
+            else:
+                transaction = (
+                    card.charge(amount)
+                    .with_currency(self.params.constants.default_currency)
+                    .with_client_transaction_id(self.reference)
+                    .execute()
+                )
         return self.__results(transaction)
 
     def verify(self, card: CreditCardData, address: Address):
@@ -99,22 +127,44 @@ class OnlinePayments:
         )
         return self.__results(transaction)
 
-    def authorize(self, amount: float, card: CreditCardData):
+    def authorize(self, amount: float, card: CreditCardData, zip_code=None):
+        zip_code_address = None
+        if zip_code:
+            zip_code_address = get_zip_code_address(zip_code)
         if card.cvn:
-            transaction = (
-                card.authorize(amount)
-                .with_cvc(card.cvn)
-                .with_currency(self.params.constants.default_currency)
-                .with_client_transaction_id(self.reference)
-                .execute()
-            )
+            if zip_code_address:
+                transaction = (
+                    card.authorize(amount)
+                    .with_cvc(card.cvn)
+                    .with_address(zip_code_address)
+                    .with_currency(self.params.constants.default_currency)
+                    .with_client_transaction_id(self.reference)
+                    .execute()
+                )
+            else:
+                transaction = (
+                    card.authorize(amount)
+                    .with_cvc(card.cvn)
+                    .with_currency(self.params.constants.default_currency)
+                    .with_client_transaction_id(self.reference)
+                    .execute()
+                )
         else:
-            transaction = (
-                card.authorize(amount)
-                .with_currency(self.params.constants.default_currency)
-                .with_client_transaction_id(self.reference)
-                .execute()
-            )
+            if zip_code_address:
+                transaction = (
+                    card.authorize(amount)
+                    .with_address(zip_code_address)
+                    .with_currency(self.params.constants.default_currency)
+                    .with_client_transaction_id(self.reference)
+                    .execute()
+                )
+            else:
+                transaction = (
+                    card.authorize(amount)
+                    .with_currency(self.params.constants.default_currency)
+                    .with_client_transaction_id(self.reference)
+                    .execute()
+                )
 
         return self.__results(transaction)
 
