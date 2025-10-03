@@ -15,6 +15,46 @@ logger = get_logger()
 
 
 @dataclass
+class VerifyAddressDataClass:
+    street_address_1: Union[str, None]
+    street_address_2: Union[str, None]
+    street_address_3: Union[str, None]
+    city: Union[str, None]
+    province: Union[str, None]
+    postal_code: Union[str, None]
+
+
+def verify_address_data(
+        street_address_1: Union[str, None],
+        street_address_2: Union[str, None],
+        street_address_3: Union[str, None],
+        city: Union[str, None],
+        province: Union[str, None],
+        postal_code: Union[str, None]
+) -> Address | None:
+    if all(v is None for v in (
+            street_address_1,
+            street_address_2,
+            street_address_3,
+            city,
+            province,
+            postal_code
+    )):
+        return None
+
+    # Otherwise build the Address object
+    address = Address()
+    address.street_address_1 = street_address_1
+    address.street_address_2 = street_address_2
+    address.street_address_3 = street_address_3
+    address.city = city
+    address.province = province
+    address.postal_code = postal_code
+
+    return address
+
+
+@dataclass
 class CreditCardDataDataclass:
     number: str
     exp_month: str

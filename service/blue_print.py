@@ -7,7 +7,7 @@ from uuid import UUID
 from sanic import json, Request
 from sanic.blueprints import Blueprint
 
-from service.business.functions import OnlinePayments, card_data, CreditCardDataDataclass
+from service.business.functions import OnlinePayments, card_data, CreditCardDataDataclass, VerifyAddressDataClass, verify_address_data
 from service.business.params import HeartlandParams
 from service.json_util import ignore_properties, EnhancedJSONEncoder
 
@@ -42,6 +42,21 @@ class SaleRequestInput(RequestInput):
 
 
 @dataclass
+class VerifyRequestInput(RequestInput):
+    credit_card_data: CreditCardDataDataclass
+    address: Union[VerifyAddressDataClass, None]
+
+    def __post_init__(self):
+        super().__post_init__()
+        if not isinstance(self.credit_card_data, CreditCardDataDataclass):
+            self.credit_card_data = \
+                ignore_properties(CreditCardDataDataclass, self.credit_card_data)
+        if not isinstance(self.address, VerifyAddressDataClass):
+            self.address = \
+                ignore_properties(VerifyAddressDataClass, self.address)
+
+
+@dataclass
 class RefundRequestInput(RequestInput):
     heartland_transaction_id: str
     payment_transaction_amount: str
@@ -52,6 +67,35 @@ class RefundRequestInput(RequestInput):
 class CaptureRequestInput(RequestInput):
     heartland_transaction_id: str
     payment_transaction_amount: str
+
+
+@bp.post("/verify")
+def verify(request: Request):
+    request_input = ignore_properties(VerifyRequestInput, request.json)
+    if getattr(request.app.ctx, "echo", False):
+        return json(dumps(request_input, cls=EnhancedJSONEncoder))
+
+    result = OnlinePayments(
+        params=request_input.params,
+        reference=request_input.reference,
+        qa=request_input.qa
+    ).verify(
+        card=card_data(
+            number=request_input.credit_card_data.number,
+            exp_month=request_input.credit_card_data.exp_month,
+            exp_year=request_input.credit_card_data.exp_year,
+            cvn=request_input.credit_card_data.cvn,
+        ),
+        address=verify_address_data(
+            request_input.address.street_address_1,
+            request_input.address.street_address_2,
+            request_input.address.street_address_3,
+            request_input.address.city,
+            request_input.address.province,
+            request_input.address.postal_code,
+        )
+    )
+    return json(result)
 
 
 @bp.post("/sale")
