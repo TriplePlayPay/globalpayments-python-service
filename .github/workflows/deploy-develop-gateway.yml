@@ -35,9 +35,8 @@ permissions:
 on:
   workflow_dispatch:
   push:
-    branches: [ develop ]
-  # Validation: add `deva/gateway-dev-cicd` here temporarily (with a matching OIDC trust ref)
-  # to test on the branch, then remove once green - same flow as payments.
+    branches: [ develop, deva/gateway-dev-cicd ]   # deva/gateway-dev-cicd = TEMP validation trigger, remove once green
+  # (validating on the branch with the matching OIDC trust ref - same flow as payments)
 
 env:
   AWS_REGION: us-east-2
