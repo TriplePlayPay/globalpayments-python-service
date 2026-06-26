@@ -2,6 +2,7 @@
 name = "globalpayments-python-service"
 version = "0.1.0"
 description = "wrapper for GPL licensed code in TriplePlayPay/globalpayments-python-sdk"
+package-mode = false
 authors = ["Your Name <you@example.com>"]
 license = "GPL-2.0-only"
 readme = "README.md"
