@@ -80,8 +80,11 @@ jobs:
         #        url."https://x-access-token:$(cat /run/secrets/ghtoken)@github.com/".insteadOf "https://github.com/" \
         #        && poetry install --without dev)
         run: |
-          docker build . --platform=linux/amd64 -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
-          docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
+          docker build . --platform=linux/amd64 \
+            -t "$REGISTRY/$ECR_REPO:dev" \
+            -t "$REGISTRY/$ECR_REPO:sandbox"
+          docker push "$REGISTRY/$ECR_REPO:dev"
+          docker push "$REGISTRY/$ECR_REPO:sandbox"
 
       - name: Deploy to gateway dev ECS (auto-skips until the GW_DEV_ECS_* repo vars are set)
         if: vars.GW_DEV_ECS_CLUSTER != '' && vars.GW_DEV_ECS_SERVICE != ''
