@@ -1,0 +1,52 @@
+# globalpayments-python-service deploy pipeline (ITPP-162).
+#   push to master           -> dev + sandbox, automatically (Gateway account)
+#   manual workflow_dispatch -> production (TPP account), behind the approval gate
+# Deploy logic lives once in _deploy.yml; each job calls it with this env's values.
+
+name: deploy
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  dev:
+    if: ${{ github.event_name == 'push' }}
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: dev
+      aws_region:  us-east-2
+      role_arn:    arn:aws:iam::917220117358:role/github-actions-globalpayments-developer
+      registry:    917220117358.dkr.ecr.us-east-2.amazonaws.com
+      ecr_repo:    tpp-gateway/globalpayments-python-service
+      image_tag:   dev
+      ecs_cluster: ${{ vars.GW_DEV_ECS_CLUSTER }}
+      ecs_service: ${{ vars.GW_DEV_ECS_SERVICE }}
+
+  sandbox:
+    if: ${{ github.event_name == 'push' }}
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: sandbox
+      aws_region:  us-east-2
+      role_arn:    arn:aws:iam::917220117358:role/github-actions-globalpayments-developer
+      registry:    917220117358.dkr.ecr.us-east-2.amazonaws.com
+      ecr_repo:    tpp-gateway/globalpayments-python-service
+      image_tag:   sandbox
+      ecs_cluster: ${{ vars.GW_SANDBOX_ECS_CLUSTER }}
+      ecs_service: ${{ vars.GW_SANDBOX_ECS_SERVICE }}
+
+  # production -> TPP: same _deploy.yml, manual + gated. Fill role/repo/cluster when Akash
+  # provisions the TPP prod OIDC role + ECR repo + ECS target (see payments/deploy.yml for the shape).
+  production:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: production
+      aws_region:  us-east-1
+      role_arn:    arn:aws:iam::907119984749:role/TODO-globalpayments-prod-role   # TODO (Akash)
+      registry:    907119984749.dkr.ecr.us-east-1.amazonaws.com
+      ecr_repo:    TODO-globalpayments-prod-repo                                  # TODO
+      image_tag:   master
+      # ecs_cluster / ecs_service left empty until the prod target exists (ECS step auto-skips)
