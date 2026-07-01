@@ -28,7 +28,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+    environment: ${{ inputs.environment == 'production' && 'production' || '' }}
     concurrency:
       group: deploy-${{ inputs.environment }}-${{ github.repository }}
     permissions:
