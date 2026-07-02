@@ -25,8 +25,8 @@ jobs:
       registry:    917220117358.dkr.ecr.us-east-2.amazonaws.com
       ecr_repo:    tpp-gateway/globalpayments-python-service
       image_tag:   dev
-      ecs_cluster: ${{ vars.GW_DEV_ECS_CLUSTER }}
-      ecs_service: ${{ vars.GW_DEV_ECS_SERVICE }}
+      ecs_cluster: tpp-dev-ecs-cluster
+      ecs_service: tpp-dev-globalpayments-service
 
   sandbox:
     if: ${{ github.event_name == 'push' }}
@@ -38,8 +38,8 @@ jobs:
       registry:    917220117358.dkr.ecr.us-east-2.amazonaws.com
       ecr_repo:    tpp-gateway/globalpayments-python-service
       image_tag:   sandbox
-      ecs_cluster: ${{ vars.GW_SANDBOX_ECS_CLUSTER }}
-      ecs_service: ${{ vars.GW_SANDBOX_ECS_SERVICE }}
+      ecs_cluster: ''   # no Gateway sandbox cluster exists yet -> ECS deploy auto-skips (build+push only)
+      ecs_service: ''
 
   # production -> TPP: same _deploy.yml, manual + gated. Fill role/repo/cluster when Akash
   # provisions the TPP prod OIDC role + ECR repo + ECS target (see payments/deploy.yml for the shape).
