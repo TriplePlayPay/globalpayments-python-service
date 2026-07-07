@@ -7,7 +7,7 @@ name: deploy
 
 on:
   push:
-    branches: [ main, deva/gateway-dev-cicd ]
+    branches: [ main, deva/gateway-dev-cicd ]   # TEMP: test branch for the multi-arch smoke test (revert before merge)
   workflow_dispatch: {}
 
 permissions:
@@ -25,8 +25,8 @@ jobs:
       registry:    917220117358.dkr.ecr.us-east-2.amazonaws.com
       ecr_repo:    tpp-gateway/globalpayments-python-service
       image_tag:   dev
-      ecs_cluster: ${{ vars.GW_DEV_ECS_CLUSTER }}
-      ecs_service: ${{ vars.GW_DEV_ECS_SERVICE }}
+      ecs_cluster: tpp-dev-ecs-cluster
+      ecs_service: tpp-dev-globalpayments-service
 
   sandbox:
     if: ${{ github.event_name == 'push' }}
@@ -38,19 +38,21 @@ jobs:
       registry:    917220117358.dkr.ecr.us-east-2.amazonaws.com
       ecr_repo:    tpp-gateway/globalpayments-python-service
       image_tag:   sandbox
-      ecs_cluster: ${{ vars.GW_SANDBOX_ECS_CLUSTER }}
-      ecs_service: ${{ vars.GW_SANDBOX_ECS_SERVICE }}
+      ecs_cluster: ''   # no Gateway sandbox cluster exists yet -> ECS deploy auto-skips (build+push only)
+      ecs_service: ''
 
-  # production -> TPP: same _deploy.yml, manual + gated. Fill role/repo/cluster when Akash
-  # provisions the TPP prod OIDC role + ECR repo + ECS target (see payments/deploy.yml for the shape).
+  # production -> TPP. Manual only. Uses the SHARED prod-deploy-payments-role (Akash is widening its
+  # trust+perms to cover this repo). Real prod ECR + ECS are set so the deploy actually runs (no skip).
+  # NOTE: prod guards (branch-validate + approval via the GitHub App) to be added before go-live (Ramesh).
   production:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     uses: ./.github/workflows/_deploy.yml
     with:
       environment: production
       aws_region:  us-east-1
-      role_arn:    arn:aws:iam::907119984749:role/TODO-globalpayments-prod-role   # TODO (Akash)
+      role_arn:    arn:aws:iam::907119984749:role/prod-deploy-payments-role
       registry:    907119984749.dkr.ecr.us-east-1.amazonaws.com
-      ecr_repo:    TODO-globalpayments-prod-repo                                  # TODO
-      image_tag:   master
-      # ecs_cluster / ecs_service left empty until the prod target exists (ECS step auto-skips)
+      ecr_repo:    globalpayments-service
+      image_tag:   latest
+      ecs_cluster: payments-prod-payments-cluster
+      ecs_service: payments-prod-global-payments-service
