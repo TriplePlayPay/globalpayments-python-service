@@ -72,7 +72,14 @@ jobs:
       - name: Deploy to ECS (auto-skips until cluster/service are provided)
         if: ${{ inputs.ecs_cluster != '' && inputs.ecs_service != '' }}
         run: |
-          aws ecs update-service --region "${{ inputs.aws_region }}" --force-new-deployment \
-            --cluster "${{ inputs.ecs_cluster }}" --service "${{ inputs.ecs_service }}"
-          aws ecs wait services-stable --region "${{ inputs.aws_region }}" \
-            --cluster "${{ inputs.ecs_cluster }}" --services "${{ inputs.ecs_service }}"
+          REGION="${{ inputs.aws_region }}"; CLUSTER="${{ inputs.ecs_cluster }}"; SERVICE="${{ inputs.ecs_service }}"
+          aws ecs update-service --region "$REGION" --force-new-deployment --cluster "$CLUSTER" --service "$SERVICE" >/dev/null
+          echo "Rolling $SERVICE - waiting for the deployment to reach COMPLETED (up to 30 min)..."
+          for i in $(seq 1 60); do
+            STATE=$(aws ecs describe-services --region "$REGION" --cluster "$CLUSTER" --services "$SERVICE" --query 'services[0].deployments[0].rolloutState' --output text)
+            echo "  [$i/60] rolloutState=$STATE"
+            [ "$STATE" = "COMPLETED" ] && { echo "Deployment COMPLETED."; exit 0; }
+            [ "$STATE" = "FAILED" ] && { echo "Deployment FAILED."; exit 1; }
+            sleep 30
+          done
+          echo "Timed out after 30 min waiting for stabilization."; exit 1
