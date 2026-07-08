@@ -1,0 +1,24 @@
+# globalpayments — deploy to Dev (Gateway account, us-east-2). Auto on push to main.
+# Thin caller of the reusable _deploy.yml.
+name: deploy-develop
+
+on:
+  push:
+    branches: [ main, deva/gateway-dev-cicd ]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  dev:
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: dev
+      aws_region:  us-east-2
+      role_arn:    arn:aws:iam::917220117358:role/github-actions-globalpayments-developer
+      registry:    917220117358.dkr.ecr.us-east-2.amazonaws.com
+      ecr_repo:    tpp-gateway/globalpayments-python-service
+      image_tag:   dev
+      ecs_cluster: tpp-dev-ecs-cluster
+      ecs_service: tpp-dev-globalpayments-service

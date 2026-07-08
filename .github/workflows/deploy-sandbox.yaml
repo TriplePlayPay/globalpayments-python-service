@@ -1,0 +1,24 @@
+# globalpayments — deploy to Sandbox (Gateway account, us-east-2). Auto on push to main.
+# Thin caller of the reusable _deploy.yml.
+name: deploy-sandbox
+
+on:
+  push:
+    branches: [ main, deva/gateway-dev-cicd ]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  sandbox:
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: sandbox
+      aws_region:  us-east-2
+      role_arn:    arn:aws:iam::917220117358:role/github-actions-globalpayments-developer
+      registry:    917220117358.dkr.ecr.us-east-2.amazonaws.com
+      ecr_repo:    tpp-gateway/globalpayments-python-service
+      image_tag:   sandbox
+      ecs_cluster: tpp-sandbox-ecs-cluster
+      ecs_service: tpp-sandbox-globalpayments-service
