@@ -1,0 +1,36 @@
+# globalpayments — deploy to Production (TPP account, us-east-1). Manual only, gated.
+# Thin caller of the reusable _deploy.yml; pauses at the 'production' Environment's reviewers.
+name: deploy-production
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # Guard: production only ever deploys from main.
+  prod-branch-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check branch is main
+        run: |
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          if [ "$BRANCH" != "main" ]; then
+            echo "Branch '$BRANCH' is not main — aborting production deployment."; exit 1
+          fi
+          echo "On main — ok."
+
+  production:
+    needs: prod-branch-validate
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: production
+      aws_region:  us-east-1
+      role_arn:    arn:aws:iam::907119984749:role/prod-deploy-payments-role
+      registry:    907119984749.dkr.ecr.us-east-1.amazonaws.com
+      ecr_repo:    globalpayments-service
+      image_tag:   latest
+      ecs_cluster: payments-prod-payments-cluster
+      ecs_service: payments-prod-global-payments-service
