@@ -1,0 +1,30 @@
+# Reusable SonarQube scan (copied per repo; only the caller's project_key differs).
+# Runs on the self-hosted runner (org "sonar-runners" group, label "sonar"); token from AWS SSM
+# Param Store via the runner's IAM role (no GitHub secret).
+name: _sonar
+on:
+  workflow_call:
+    inputs:
+      project_key:
+        description: "SonarQube project key (e.g. tpp.<repo>)"
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  scan:
+    runs-on: [self-hosted, sonar]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: SonarQube scan
+        run: |
+          set -euo pipefail
+          TOKEN="$(aws ssm get-parameter --name /sonar/analysis-token --with-decryption --query Parameter.Value --output text --region us-east-2)"
+          echo "::add-mask::$TOKEN"
+          docker run --rm -v "$PWD:/usr/src" -e SONAR_TOKEN="$TOKEN" sonarsource/sonar-scanner-cli \
+            -Dsonar.host.url=https://sonar-nonp.solutionsbytext.com \
+            -Dsonar.projectKey=${{ inputs.project_key }} \
+            -Dsonar.sources=. \
+            -Dsonar.exclusions='**/.venv/**,**/dist/**,**/build/**,**/target/**,**/static/**,**/node_modules/**,**/*.min.*'

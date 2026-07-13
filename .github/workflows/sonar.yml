@@ -1,0 +1,11 @@
+name: sonar
+on:
+  push:
+    branches: [ deva/gateway-dev-cicd, main ]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  sonar:
+    uses: ./.github/workflows/_sonar.yml
+    with:
+      project_key: tpp.globalpayments-python-service
