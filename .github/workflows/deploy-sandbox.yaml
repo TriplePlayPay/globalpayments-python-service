@@ -16,8 +16,8 @@ jobs:
     with:
       environment: sandbox
       aws_region:  us-east-2
-      role_arn:    arn:aws:iam::917220117358:role/github-actions-globalpayments-developer
-      registry:    917220117358.dkr.ecr.us-east-2.amazonaws.com
+      role_arn:    ${{ vars.SANDBOX_ROLE_ARN }}
+      registry:    ${{ vars.SANDBOX_REGISTRY }}
       ecr_repo:    tpp-gateway/globalpayments-python-service
       image_tag:   sandbox
       ecs_cluster: tpp-sandbox-ecs-cluster
