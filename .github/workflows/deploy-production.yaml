@@ -30,7 +30,8 @@ jobs:
       aws_region:  us-east-1
       role_arn:    ${{ vars.PROD_ROLE_ARN }}
       registry:    ${{ vars.PROD_REGISTRY }}
-      ecr_repo:    globalpayments-service
+      ecr_repo:    tpp-prod/global-payments
+      legacy_ecr_repo: globalpayments-service
       image_tag:   latest
       ecs_cluster: payments-prod-payments-cluster
       ecs_service: payments-prod-global-payments-service

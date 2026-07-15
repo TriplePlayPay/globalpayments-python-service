@@ -18,7 +18,8 @@ jobs:
       aws_region:  us-east-2
       role_arn:    ${{ vars.SANDBOX_ROLE_ARN }}
       registry:    ${{ vars.SANDBOX_REGISTRY }}
-      ecr_repo:    tpp-gateway/globalpayments-python-service
+      ecr_repo:    tpp-sandbox/global-payments
+      legacy_ecr_repo: tpp-gateway/globalpayments-python-service
       image_tag:   sandbox
       ecs_cluster: tpp-sandbox-ecs-cluster
       ecs_service: tpp-sandbox-globalpayments-service
