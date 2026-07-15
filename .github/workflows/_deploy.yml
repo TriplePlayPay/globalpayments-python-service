@@ -20,6 +20,7 @@ on:
       role_arn:    { type: string, required: true }
       registry:    { type: string, required: true }
       ecr_repo:    { type: string, required: true }
+      legacy_ecr_repo: { type: string, required: false, default: '' }   # ITPP-273 backward-compat dual-push; remove after task-def flip
       image_tag:   { type: string, required: true }            # moving tag: dev | sandbox | master
       base_image:  { type: string, required: false, default: '' }   # optional Docker build-arg
       ecs_cluster: { type: string, required: false, default: '' }   # empty => skip ECS deploy
@@ -62,11 +63,18 @@ jobs:
           if [ -n "${{ inputs.base_image }}" ]; then
             BASE_ARG="--build-arg BASE_IMAGE=${{ inputs.base_image }}"
           fi
+          TAGS=(-t "$IMG:${{ github.sha }}" -t "$IMG:${{ inputs.image_tag }}")
+          # ITPP-273 backward-compat: also push to the legacy repo (same account) until the ECS task def flips.
+          # This is the buildx --push variant, so add legacy tags to the single multi-arch build rather than
+          # docker tag/push (the image is never loaded into the local daemon).
+          if [ -n "${{ inputs.legacy_ecr_repo }}" ]; then
+            LEG="${{ inputs.registry }}/${{ inputs.legacy_ecr_repo }}"
+            TAGS+=(-t "$LEG:${{ github.sha }}" -t "$LEG:${{ inputs.image_tag }}")
+          fi
           docker buildx build . \
             --platform=linux/amd64,linux/arm64 $BASE_ARG \
             --provenance=false \
-            -t "$IMG:${{ github.sha }}" \
-            -t "$IMG:${{ inputs.image_tag }}" \
+            "${TAGS[@]}" \
             --push
 
       - name: Deploy to ECS (auto-skips until cluster/service are provided)

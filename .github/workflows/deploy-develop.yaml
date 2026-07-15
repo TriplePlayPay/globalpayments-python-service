@@ -16,9 +16,10 @@ jobs:
     with:
       environment: dev
       aws_region:  us-east-2
-      role_arn:    arn:aws:iam::917220117358:role/github-actions-globalpayments-developer
-      registry:    917220117358.dkr.ecr.us-east-2.amazonaws.com
-      ecr_repo:    tpp-gateway/globalpayments-python-service
+      role_arn:    ${{ vars.DEV_ROLE_ARN }}
+      registry:    ${{ vars.DEV_REGISTRY }}
+      ecr_repo:    tpp-dev/global-payments
+      legacy_ecr_repo: tpp-gateway/globalpayments-python-service
       image_tag:   dev
       ecs_cluster: tpp-dev-ecs-cluster
       ecs_service: tpp-dev-globalpayments-service

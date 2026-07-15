@@ -28,9 +28,10 @@ jobs:
     with:
       environment: production
       aws_region:  us-east-1
-      role_arn:    arn:aws:iam::907119984749:role/prod-deploy-payments-role
-      registry:    907119984749.dkr.ecr.us-east-1.amazonaws.com
-      ecr_repo:    globalpayments-service
+      role_arn:    ${{ vars.PROD_ROLE_ARN }}
+      registry:    ${{ vars.PROD_REGISTRY }}
+      ecr_repo:    tpp-prod/global-payments
+      legacy_ecr_repo: globalpayments-service
       image_tag:   latest
       ecs_cluster: payments-prod-payments-cluster
       ecs_service: payments-prod-global-payments-service
