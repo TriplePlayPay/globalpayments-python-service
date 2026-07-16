@@ -21,7 +21,8 @@ on:
       registry:    { type: string, required: true }
       ecr_repo:    { type: string, required: true }
       legacy_ecr_repo: { type: string, required: false, default: '' }   # ITPP-273 backward-compat dual-push; remove after task-def flip
-      image_tag:   { type: string, required: true }            # moving tag: dev | sandbox | master
+      image_tag:   { type: string, required: true }            # new per-env repo moving tag (env is in the repo path) => 'latest'
+      legacy_image_tag: { type: string, required: false, default: '' }  # legacy shared-repo moving tag: dev | sandbox | latest
       base_image:  { type: string, required: false, default: '' }   # optional Docker build-arg
       ecs_cluster: { type: string, required: false, default: '' }   # empty => skip ECS deploy
       ecs_service: { type: string, required: false, default: '' }
@@ -69,7 +70,7 @@ jobs:
           # docker tag/push (the image is never loaded into the local daemon).
           if [ -n "${{ inputs.legacy_ecr_repo }}" ]; then
             LEG="${{ inputs.registry }}/${{ inputs.legacy_ecr_repo }}"
-            TAGS+=(-t "$LEG:${{ github.sha }}" -t "$LEG:${{ inputs.image_tag }}")
+            TAGS+=(-t "$LEG:${{ github.sha }}" -t "$LEG:${{ inputs.legacy_image_tag }}")
           fi
           docker buildx build . \
             --platform=linux/amd64,linux/arm64 $BASE_ARG \

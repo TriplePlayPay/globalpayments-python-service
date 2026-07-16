@@ -20,6 +20,7 @@ jobs:
       registry:    ${{ vars.SANDBOX_REGISTRY }}
       ecr_repo:    tpp-sandbox/global-payments
       legacy_ecr_repo: tpp-gateway/globalpayments-python-service
-      image_tag:   sandbox
+      image_tag:   latest
+      legacy_image_tag: sandbox
       ecs_cluster: tpp-sandbox-ecs-cluster
       ecs_service: tpp-sandbox-globalpayments-service
