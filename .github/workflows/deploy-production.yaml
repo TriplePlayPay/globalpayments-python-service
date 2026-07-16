@@ -33,5 +33,6 @@ jobs:
       ecr_repo:    tpp-prod/global-payments
       legacy_ecr_repo: globalpayments-service
       image_tag:   latest
+      legacy_image_tag: latest
       ecs_cluster: payments-prod-payments-cluster
       ecs_service: payments-prod-global-payments-service

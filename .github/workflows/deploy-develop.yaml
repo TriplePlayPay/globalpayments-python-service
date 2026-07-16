@@ -20,6 +20,7 @@ jobs:
       registry:    ${{ vars.DEV_REGISTRY }}
       ecr_repo:    tpp-dev/global-payments
       legacy_ecr_repo: tpp-gateway/globalpayments-python-service
-      image_tag:   dev
+      image_tag:   latest
+      legacy_image_tag: dev
       ecs_cluster: tpp-dev-ecs-cluster
       ecs_service: tpp-dev-globalpayments-service
