@@ -26,6 +26,8 @@ on:
       base_image:  { type: string, required: false, default: '' }   # optional Docker build-arg
       ecs_cluster: { type: string, required: false, default: '' }   # empty => skip ECS deploy
       ecs_service: { type: string, required: false, default: '' }
+      new_ecs_cluster: { type: string, required: false, default: '' }  # prod ramp: 2nd (new-prod) cluster; roll both old+new while traffic ramps
+      new_ecs_service: { type: string, required: false, default: '' }
 
 jobs:
   deploy:
@@ -78,17 +80,26 @@ jobs:
             "${TAGS[@]}" \
             --push
 
-      - name: Deploy to ECS (auto-skips until cluster/service are provided)
+      - name: Deploy to ECS (rolls each provided cluster/service; auto-skips empties)
         if: ${{ inputs.ecs_cluster != '' && inputs.ecs_service != '' }}
         run: |
-          REGION="${{ inputs.aws_region }}"; CLUSTER="${{ inputs.ecs_cluster }}"; SERVICE="${{ inputs.ecs_service }}"
-          aws ecs update-service --region "$REGION" --force-new-deployment --cluster "$CLUSTER" --service "$SERVICE" >/dev/null
-          echo "Rolling $SERVICE - waiting for the deployment to reach COMPLETED (up to 30 min)..."
-          for i in $(seq 1 60); do
-            STATE=$(aws ecs describe-services --region "$REGION" --cluster "$CLUSTER" --services "$SERVICE" --query 'services[0].deployments[0].rolloutState' --output text)
-            echo "  [$i/60] rolloutState=$STATE"
-            [ "$STATE" = "COMPLETED" ] && { echo "Deployment COMPLETED."; exit 0; }
-            [ "$STATE" = "FAILED" ] && { echo "Deployment FAILED."; exit 1; }
-            sleep 30
-          done
-          echo "Timed out after 30 min waiting for stabilization."; exit 1
+          REGION="${{ inputs.aws_region }}"
+          roll() {
+            CLUSTER="$1"; SERVICE="$2"
+            if [ -z "$CLUSTER" ] || [ -z "$SERVICE" ]; then return 0; fi
+            echo "== Rolling $SERVICE on $CLUSTER =="
+            aws ecs update-service --region "$REGION" --force-new-deployment --cluster "$CLUSTER" --service "$SERVICE" >/dev/null
+            for i in $(seq 1 60); do
+              STATE=$(aws ecs describe-services --region "$REGION" --cluster "$CLUSTER" --services "$SERVICE" --query 'services[0].deployments[0].rolloutState' --output text)
+              echo "  [$i/60] $SERVICE rolloutState=$STATE"
+              [ "$STATE" = "COMPLETED" ] && { echo "$SERVICE COMPLETED."; return 0; }
+              [ "$STATE" = "FAILED" ] && { echo "$SERVICE FAILED."; return 1; }
+              sleep 30
+            done
+            echo "$SERVICE timed out after 30 min."; return 1
+          }
+          FAILED=0
+          roll "${{ inputs.ecs_cluster }}"   "${{ inputs.ecs_service }}"   || FAILED=1
+          roll "${{ inputs.new_ecs_cluster }}" "${{ inputs.new_ecs_service }}" || FAILED=1
+          [ "$FAILED" = "1" ] && { echo "One or more rollouts failed."; exit 1; }
+          echo "All rollouts COMPLETED."; exit 0
