@@ -26,8 +26,8 @@ on:
       base_image:  { type: string, required: false, default: '' }   # optional Docker build-arg
       ecs_cluster: { type: string, required: false, default: '' }   # empty => skip ECS deploy
       ecs_service: { type: string, required: false, default: '' }
-      ecs_cluster_2: { type: string, required: false, default: '' }  # prod ramp: 2nd (new-prod) cluster; roll both old+new while traffic ramps
-      ecs_service_2: { type: string, required: false, default: '' }
+      new_ecs_cluster: { type: string, required: false, default: '' }  # prod ramp: 2nd (new-prod) cluster; roll both old+new while traffic ramps
+      new_ecs_service: { type: string, required: false, default: '' }
 
 jobs:
   deploy:
@@ -100,6 +100,6 @@ jobs:
           }
           FAILED=0
           roll "${{ inputs.ecs_cluster }}"   "${{ inputs.ecs_service }}"   || FAILED=1
-          roll "${{ inputs.ecs_cluster_2 }}" "${{ inputs.ecs_service_2 }}" || FAILED=1
+          roll "${{ inputs.new_ecs_cluster }}" "${{ inputs.new_ecs_service }}" || FAILED=1
           [ "$FAILED" = "1" ] && { echo "One or more rollouts failed."; exit 1; }
           echo "All rollouts COMPLETED."; exit 0

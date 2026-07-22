@@ -37,5 +37,5 @@ jobs:
       ecs_cluster: payments-prod-payments-cluster
       ecs_service: payments-prod-global-payments-service
       # Prod traffic ramp (both envs live): also roll the new-prod cluster.
-      ecs_cluster_2: tpp-prod-ecs-cluster
-      ecs_service_2: tpp-prod-global-payments-service
+      new_ecs_cluster: tpp-prod-ecs-cluster
+      new_ecs_service: tpp-prod-global-payments-service
