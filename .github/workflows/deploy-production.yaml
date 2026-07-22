@@ -36,3 +36,6 @@ jobs:
       legacy_image_tag: latest
       ecs_cluster: payments-prod-payments-cluster
       ecs_service: payments-prod-global-payments-service
+      # Prod traffic ramp (both envs live): also roll the new-prod cluster.
+      ecs_cluster_2: tpp-prod-ecs-cluster
+      ecs_service_2: tpp-prod-global-payments-service
