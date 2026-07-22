@@ -1,7 +1,7 @@
 # inspired by https://github.com/orgs/python-poetry/discussions/1879#discussioncomment-216865
 
 # `python-base` sets up all our shared environment variables
-FROM python:3.11.9-alpine@sha256:0b5ed25d3cc27cd35c7b0352bac8ef2ebc8dd3da72a0c03caaf4eb15d9ec827a as python-base
+FROM python:3.11-alpine@sha256:25976e9d34a0fab1f278cae931f34c8303d97bf0c0d7f85b6b4dcf641d7702a4 as python-base
 
     # python
 ENV PYTHONUNBUFFERED=1 \
