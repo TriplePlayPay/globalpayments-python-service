@@ -23,4 +23,4 @@ jobs:
       image_tag:   latest
       legacy_image_tag: sandbox
       ecs_cluster: tpp-sandbox-ecs-cluster
-      ecs_service: tpp-sandbox-globalpayments-service
+      ecs_service: tpp-sandbox-global-payments-service
