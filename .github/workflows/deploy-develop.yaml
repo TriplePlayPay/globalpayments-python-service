@@ -23,4 +23,4 @@ jobs:
       image_tag:   latest
       legacy_image_tag: dev
       ecs_cluster: tpp-dev-ecs-cluster
-      ecs_service: tpp-dev-globalpayments-service
+      ecs_service: tpp-dev-global-payments-service
