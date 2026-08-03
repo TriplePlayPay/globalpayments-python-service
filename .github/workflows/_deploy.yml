@@ -31,7 +31,12 @@ on:
 
 jobs:
   deploy:
+    # Stays on the amd64 runner with a genuine multi-arch build: this service is X86_64 in dev/sandbox
+    # but ARM64 in prod, so both platforms are required. The arm64 half is therefore QEMU-emulated and
+    # can rarely deadlock (a sibling repo hung ~6h on 2026-07-31), hence the timeout below.
+    # Once dev/sandbox move to ARM64 this can become a native arm64, single-platform build.
     runs-on: ubuntu-latest
+    timeout-minutes: 30   # fail fast instead of burning GitHub's 6h ceiling if the emulated build wedges
     environment: ${{ inputs.environment == 'production' && 'production' || '' }}
     concurrency:
       group: deploy-${{ inputs.environment }}-${{ github.repository }}
