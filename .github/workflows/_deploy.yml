@@ -7,6 +7,19 @@
 #
 #   tpp-global-payments:global-payments-<env>-1.0.0.<run_number>
 #
+# The image is BUILT ONCE, by dev, and then promoted (decisions #4 and #26). Sandbox and prod do
+# not rebuild — they add their own tag to the digest dev produced and deploy that. So the artifact
+# that reaches production is literally the one that was tested, not a rebuild of the same commit.
+# Container builds are not reproducible, so a rebuild genuinely differs: our own dev and sandbox
+# base images, built ten seconds apart from identical source, have different digests.
+#
+#   merge -> dev builds  global-payments-dev-1.0.0.N
+#              -> sandbox promotes that digest as global-payments-sandbox-1.0.0.N
+#                   -> prod promotes it as global-payments-prod-1.0.0.N (manual, gated)
+#
+# The version number N comes from the dev build and travels unchanged, so one number identifies
+# one artifact in every environment.
+#
 # Two roles are needed because the image and the service live in different accounts:
 #   ecr_role_arn -> prod account, used to push the image (all environments)
 #   role_arn     -> the environment's own account, used to roll ECS
@@ -39,16 +52,16 @@ on:
       ecr_repo:    { type: string, required: true }            # shared repo: tpp-global-payments
       ecr_region:  { type: string, required: false, default: 'us-east-1' }
       image_tag:   { type: string, required: true }            # global-payments-<env>-1.0.0.<n>
+      promote_from_tag: { type: string, required: false, default: '' }  # set => promote, don't build
       base_image:  { type: string, required: false, default: '' }   # optional Docker build-arg
       ecs_cluster: { type: string, required: false, default: '' }   # empty => skip ECS deploy
       ecs_service: { type: string, required: false, default: '' }
 
 jobs:
   deploy:
-    # Stays on the amd64 runner with a genuine multi-arch build: this service is X86_64 in
-    # dev/sandbox but ARM64 in prod, so both platforms are required. The arm64 half is therefore
-    # QEMU-emulated and can rarely deadlock (a sibling repo hung ~6h on 2026-07-31), hence the
-    # timeout below. Once dev/sandbox move to ARM64 this can become a native single-platform build.
+    # amd64 runner with a genuine multi-arch build: X86_64 in dev/sandbox, ARM64 in prod, so both
+    # platforms are required. The arm64 half is QEMU-emulated and can rarely deadlock (a sibling
+    # repo's build hung ~6h on 2026-07-31 and died at GitHub's job ceiling.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: ${{ inputs.environment == 'production' && 'production' || '' }}
@@ -59,11 +72,14 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        if: ${{ inputs.promote_from_tag == '' }}
 
       - name: Set up QEMU (enables the arm64 build on the amd64 runner)
+        if: ${{ inputs.promote_from_tag == '' }}
         uses: docker/setup-qemu-action@v3
 
-      - name: Set up Docker Buildx (multi-platform builder)
+      - name: Set up Docker Buildx (for --push straight to ECR)
+        if: ${{ inputs.promote_from_tag == '' }}
         uses: docker/setup-buildx-action@v3
 
       # ---- push phase: prod account ------------------------------------------------
@@ -77,9 +93,64 @@ jobs:
         run: aws sts get-caller-identity
 
       - name: Log in to the shared ECR
+        if: ${{ inputs.promote_from_tag == '' }}
         uses: aws-actions/amazon-ecr-login@v2
 
+      # ---- promote path: no build, no image transfer ------------------------------
+      # Adds a second tag to an image that already exists in this repo, by re-putting its
+      # manifest under a new name. Immutability permits this because the NAME is new; it only
+      # forbids overwriting a name already in use. The manifest is copied verbatim, so a
+      # multi-arch index keeps both architectures — pulling and re-pushing would flatten it.
+      - name: Promote ${{ inputs.promote_from_tag }} -> ${{ inputs.image_tag }}
+        if: ${{ inputs.promote_from_tag != '' }}
+        run: |
+          set -euo pipefail
+          REPO="${{ inputs.ecr_repo }}"
+          REGION="${{ inputs.ecr_region }}"
+
+          if aws ecr batch-get-image --region "$REGION" --repository-name "$REPO" \
+               --image-ids imageTag="${{ inputs.image_tag }}" \
+               --query 'images[0].imageId.imageDigest' --output text 2>/dev/null | grep -q '^sha256:'; then
+            echo "${{ inputs.image_tag }} already exists — nothing to promote."
+            exit 0
+          fi
+
+          aws ecr batch-get-image --region "$REGION" --repository-name "$REPO" \
+            --image-ids imageTag="${{ inputs.promote_from_tag }}" \
+            --accepted-media-types \
+              "application/vnd.oci.image.index.v1+json" \
+              "application/vnd.docker.distribution.manifest.list.v2+json" \
+              "application/vnd.oci.image.manifest.v1+json" \
+              "application/vnd.docker.distribution.manifest.v2+json" \
+            --output json > got.json
+
+          jq -e '.images[0]' got.json >/dev/null \
+            || { echo "source tag ${{ inputs.promote_from_tag }} not found in $REPO"; exit 1; }
+
+          # -j, not -r: a digest is a hash of the manifest's exact bytes, and -r appends a
+          # trailing newline. ECR would accept the altered bytes and store a NEW image rather
+          # than a second tag on the existing one, quietly breaking the same-artifact guarantee.
+          jq -j '.images[0].imageManifest' got.json > manifest.json
+          MEDIA=$(jq -r '.images[0].imageManifestMediaType' got.json)
+          SRC_DIGEST=$(jq -r '.images[0].imageId.imageDigest' got.json)
+          echo "source $REPO:${{ inputs.promote_from_tag }} = $SRC_DIGEST ($MEDIA)"
+
+          aws ecr put-image --region "$REGION" --repository-name "$REPO" \
+            --image-tag "${{ inputs.image_tag }}" \
+            --image-manifest file://manifest.json \
+            --image-manifest-media-type "$MEDIA" >/dev/null
+
+          NEW_DIGEST=$(aws ecr batch-get-image --region "$REGION" --repository-name "$REPO" \
+            --image-ids imageTag="${{ inputs.image_tag }}" \
+            --query 'images[0].imageId.imageDigest' --output text)
+          echo "promoted to ${{ inputs.image_tag }} = $NEW_DIGEST"
+          [ "$NEW_DIGEST" = "$SRC_DIGEST" ] \
+            || { echo "MISMATCH: promotion produced a different digest"; exit 1; }
+          echo "Same digest — the promoted image is the artifact that was tested."
+
+      # ---- build path: only when nothing is being promoted -------------------------
       - name: Build & push (multi-arch amd64+arm64; ${{ inputs.image_tag }})
+        if: ${{ inputs.promote_from_tag == '' }}
         run: |
           set -euo pipefail
           IMG="${{ inputs.registry }}/${{ inputs.ecr_repo }}"
@@ -94,13 +165,16 @@ jobs:
             --push
 
       - name: Record the pushed digest
+        if: ${{ inputs.promote_from_tag == '' }}
+        # batch-get-image, not describe-images: prod-deploy-payments-role can push and read
+        # manifests but has no ecr:DescribeImages, so describe-images fails with AccessDenied.
         run: |
           set -euo pipefail
-          DIGEST=$(aws ecr describe-images \
+          DIGEST=$(aws ecr batch-get-image \
             --region "${{ inputs.ecr_region }}" \
             --repository-name "${{ inputs.ecr_repo }}" \
             --image-ids imageTag="${{ inputs.image_tag }}" \
-            --query 'imageDetails[0].imageDigest' --output text)
+            --query 'images[0].imageId.imageDigest' --output text)
           echo "Pushed ${{ inputs.ecr_repo }}:${{ inputs.image_tag }} => $DIGEST"
 
       # ---- deploy phase: the environment's own account -----------------------------

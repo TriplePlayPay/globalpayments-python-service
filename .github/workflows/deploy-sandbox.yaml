@@ -1,13 +1,15 @@
-# globalpayments-python-service — deploy to Sandbox. Auto on push to main.
-# Thin caller of the reusable _deploy.yml.
+# globalpayments-python-service — promote to Sandbox. Runs once deploy-develop succeeds.
 #
-# The image goes to the shared repo in the TPP prod account; the ECS service it rolls lives in
-# the Gateway account (us-east-2) and pulls that image cross-account. Hence the two roles.
+# This does NOT build. It adds a sandbox tag to the image dev just produced, so sandbox runs the
+# exact artifact dev ran rather than a rebuild of the same commit. The version number comes from
+# the dev run, which is what keeps one number meaning one artifact across environments.
+# workflow_run only fires for workflows on the default branch, so this is first proven after merge.
 name: deploy-sandbox
 
 on:
-  push:
-    branches: [ main ]
+  workflow_run:
+    workflows: [ deploy-develop ]
+    types: [ completed ]
 
 permissions:
   id-token: write
@@ -15,6 +17,7 @@ permissions:
 
 jobs:
   sandbox:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     uses: ./.github/workflows/_deploy.yml
     with:
       environment: sandbox
@@ -23,6 +26,7 @@ jobs:
       ecr_role_arn: ${{ vars.PROD_ROLE_ARN }}      # prod-deploy-payments-role: pushes for every env (decision #17)
       registry:    ${{ vars.PROD_REGISTRY }}       # shared repos live in the prod account
       ecr_repo:    tpp-global-payments
-      image_tag:   global-payments-sandbox-1.0.0.${{ github.run_number }}
+      promote_from_tag: global-payments-dev-1.0.0.${{ github.event.workflow_run.run_number }}
+      image_tag:        global-payments-sandbox-1.0.0.${{ github.event.workflow_run.run_number }}
       ecs_cluster: tpp-sandbox-ecs-cluster
       ecs_service: tpp-sandbox-global-payments-service

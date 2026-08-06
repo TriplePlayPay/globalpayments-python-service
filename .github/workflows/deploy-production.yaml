@@ -1,35 +1,34 @@
-# globalpayments-python-service — deploy to Production (TPP account, us-east-1). Manual only, gated.
-# Thin caller of the reusable _deploy.yml; pauses at the 'production' Environment's reviewers.
+# globalpayments-python-service — promote to Production (TPP account, us-east-1). Manual, gated.
+# Pauses at the 'production' Environment's required reviewers before anything runs.
 #
-# Prod is same-account, so both roles resolve into 907119984749 — the two-role split only matters
-# for dev/sandbox, and is kept here so every caller has the same shape.
+# This does NOT build. You name a version that has already run in sandbox, and it adds a prod tag
+# to that same image, so the reviewer approves a specific tested artifact rather than a build that
+# has not happened yet.
 #
-# The old v1 cluster (payments-prod-payments-cluster) is deliberately NOT rolled any more. The
-# traffic ramp finished on 2026-08-05; leaving that cluster frozen on its last known-good image is
-# what makes it a usable rollback.
+# The previous "branch must be main" guard is gone, deliberately: nothing builds from the checked
+# out branch any more, so dispatching from elsewhere would promote the identical artifact. The real
+# controls are the reviewer gate and the fact that only a tested version can be named.
+#
+# The old v1 cluster (payments-prod-payments-cluster) is deliberately NOT rolled any more — the
+# ramp finished 2026-08-05 and leaving it frozen on its last good image is what makes it a rollback.
 name: deploy-production
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to promote — the N from global-payments-sandbox-1.0.0.N (e.g. 52)'
+        required: true
+        type: string
+
+run-name: Promote global-payments 1.0.0.${{ inputs.version }} to production
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  prod-branch-validate:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check branch is main
-        run: |
-          BRANCH="${GITHUB_REF#refs/heads/}"
-          if [ "$BRANCH" != "main" ]; then
-            echo "Branch '$BRANCH' is not main — aborting production deployment."; exit 1
-          fi
-          echo "On main — ok."
-
   production:
-    needs: prod-branch-validate
     uses: ./.github/workflows/_deploy.yml
     with:
       environment: production
@@ -38,6 +37,7 @@ jobs:
       ecr_role_arn: ${{ vars.PROD_ROLE_ARN }}      # prod-deploy-payments-role: pushes for every env (decision #17)
       registry:    ${{ vars.PROD_REGISTRY }}       # shared repos live in the prod account
       ecr_repo:    tpp-global-payments
-      image_tag:   global-payments-prod-1.0.0.${{ github.run_number }}
+      promote_from_tag: global-payments-sandbox-1.0.0.${{ inputs.version }}
+      image_tag:        global-payments-prod-1.0.0.${{ inputs.version }}
       ecs_cluster: tpp-prod-ecs-cluster
       ecs_service: tpp-prod-global-payments-service
