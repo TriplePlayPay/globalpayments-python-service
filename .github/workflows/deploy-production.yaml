@@ -1,5 +1,12 @@
-# globalpayments — deploy to Production (TPP account, us-east-1). Manual only, gated.
+# globalpayments-python-service — deploy to Production (TPP account, us-east-1). Manual only, gated.
 # Thin caller of the reusable _deploy.yml; pauses at the 'production' Environment's reviewers.
+#
+# Prod is same-account, so both roles resolve into 907119984749 — the two-role split only matters
+# for dev/sandbox, and is kept here so every caller has the same shape.
+#
+# The old v1 cluster (payments-prod-payments-cluster) is deliberately NOT rolled any more. The
+# traffic ramp finished on 2026-08-05; leaving that cluster frozen on its last known-good image is
+# what makes it a usable rollback.
 name: deploy-production
 
 on:
@@ -10,7 +17,6 @@ permissions:
   contents: read
 
 jobs:
-  # Guard: production only ever deploys from main.
   prod-branch-validate:
     runs-on: ubuntu-latest
     steps:
@@ -29,13 +35,9 @@ jobs:
       environment: production
       aws_region:  us-east-1
       role_arn:    ${{ vars.PROD_ROLE_ARN }}
-      registry:    ${{ vars.PROD_REGISTRY }}
-      ecr_repo:    tpp-prod/global-payments
-      legacy_ecr_repo: globalpayments-service
-      image_tag:   latest
-      legacy_image_tag: latest
-      ecs_cluster: payments-prod-payments-cluster
-      ecs_service: payments-prod-global-payments-service
-      # Prod traffic ramp (both envs live): also roll the new-prod cluster.
-      new_ecs_cluster: tpp-prod-ecs-cluster
-      new_ecs_service: tpp-prod-global-payments-service
+      ecr_role_arn: ${{ vars.PROD_ROLE_ARN }}      # prod-deploy-payments-role: pushes for every env (decision #17)
+      registry:    ${{ vars.PROD_REGISTRY }}       # shared repos live in the prod account
+      ecr_repo:    tpp-global-payments
+      image_tag:   global-payments-prod-1.0.0.${{ github.run_number }}
+      ecs_cluster: tpp-prod-ecs-cluster
+      ecs_service: tpp-prod-global-payments-service
