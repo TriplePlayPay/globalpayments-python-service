@@ -196,11 +196,24 @@ jobs:
           set -euo pipefail
           echo "== $SERVICE on $CLUSTER -> $NEW_IMAGE =="
 
-          # The service's current task definition is the base we edit.
-          TD_ARN=$(aws ecs describe-services --region "$REGION" --cluster "$CLUSTER" \
+          # Base the new revision on the FAMILY'S latest ACTIVE revision, not the revision the
+          # service happens to be running. Terraform registers config changes (memory, env vars)
+          # as new revisions the service never points at while CI owns task_definition; building
+          # on the running revision would strand those changes forever. Family-latest picks them
+          # up on the next deploy, which is the standard render-and-register pattern.
+          RUNNING_TD=$(aws ecs describe-services --region "$REGION" --cluster "$CLUSTER" \
             --services "$SERVICE" --query 'services[0].taskDefinition' --output text)
-          aws ecs describe-task-definition --region "$REGION" --task-definition "$TD_ARN" \
+          FAMILY=$(aws ecs describe-task-definition --region "$REGION" \
+            --task-definition "$RUNNING_TD" --query 'taskDefinition.family' --output text)
+          aws ecs describe-task-definition --region "$REGION" --task-definition "$FAMILY" \
             --query 'taskDefinition' > td.json
+
+          # Drift is legitimate (a fresh Terraform config change) but can also be a manual
+          # registration or a post-rollback leftover — surface it either way.
+          LATEST_TD=$(jq -r '"\(.family):\(.revision)"' td.json)
+          if [ "${RUNNING_TD##*/}" != "$LATEST_TD" ]; then
+            echo "::warning::DRIFT: service runs ${RUNNING_TD##*/} but family latest is $LATEST_TD — basing on latest"
+          fi
 
           # The load-balanced container is the service's primary one. Some services also run a
           # task-lifetime sidecar built from the SAME image, so every container currently using
