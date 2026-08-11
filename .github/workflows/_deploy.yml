@@ -1,14 +1,43 @@
 # Reusable deploy workflow (per-repo copy — will be centralised later per ITPP-162).
-# Called once per environment by deploy.yml. One build per run, tagged with the git-sha AND the
-# environment tag, pushed to the target ECR, then the ECS service is rolled and waited on.
+# Called once per environment by the deploy-*.yaml callers.
 #
-# Routing is decided entirely by the caller's inputs:
-#   dev / sandbox -> Gateway account 917220117358 (us-east-2)
-#   production    -> TPP account     907119984749 (us-east-1)
+# ECR consolidation (ITPP-317): every environment now builds into ONE shared repo,
+# tpp-<service> in the TPP prod account (907119984749 / us-east-1). The environment is
+# carried in the TAG, not in the repo path or the account:
+#
+#   tpp-global-payments:global-payments-<env>-1.0.0.<run_number>
+#
+# The image is BUILT ONCE, by dev, and then promoted (decisions #4 and #26). Sandbox and prod do
+# not rebuild — they add their own tag to the digest dev produced and deploy that. So the artifact
+# that reaches production is literally the one that was tested, not a rebuild of the same commit.
+# Container builds are not reproducible, so a rebuild genuinely differs: our own dev and sandbox
+# base images, built ten seconds apart from identical source, have different digests.
+#
+#   merge -> dev builds  global-payments-dev-1.0.0.N
+#              -> sandbox promotes that digest as global-payments-sandbox-1.0.0.N
+#                   -> prod promotes it as global-payments-prod-1.0.0.N (manual, gated)
+#
+# The version number N comes from the dev build and travels unchanged, so one number identifies
+# one artifact in every environment.
+#
+# Two roles are needed because the image and the service live in different accounts:
+#   ecr_role_arn -> prod account, used to push the image (all environments)
+#   role_arn     -> the environment's own account, used to roll ECS
+# dev/sandbox ECS pull the image cross-account; the repository policy and the task-exec role
+# policies for that are already applied.
+#
+# Tags are IMMUTABLE in the shared repo, so a tag can never be overwritten. That is why the
+# git-sha tag is gone: re-running a workflow on the same commit would try to push an existing
+# tag and fail. github.run_number always moves, so the version tag is always new.
+#
+# Because the tag is fixed rather than moving, `force-new-deployment` can no longer pick up a
+# new image — it would just re-pull the same tag. The deploy step therefore registers a new
+# task-definition revision carrying the new image and points the service at it.
+# NOTE: this needs `ignore_task_definition_changes = true` on the service in infrastructure-v2,
+# otherwise the next terragrunt apply reverts the image. Pending Vikas (decision #23).
 #
 # The approval gate is enforced by GitHub Environments: only environment=production carries
-# required reviewers, so only prod pauses for approval. dev/sandbox run with no gate.
-# Auth is OIDC only (no static keys).
+# required reviewers. Auth is OIDC only (no static keys).
 
 name: _deploy
 
@@ -16,27 +45,25 @@ on:
   workflow_call:
     inputs:
       environment: { type: string, required: true }            # dev | sandbox | production
-      aws_region:  { type: string, required: true }
-      role_arn:    { type: string, required: true }
-      registry:    { type: string, required: true }
-      ecr_repo:    { type: string, required: true }
-      legacy_ecr_repo: { type: string, required: false, default: '' }   # ITPP-273 backward-compat dual-push; remove after task-def flip
-      image_tag:   { type: string, required: true }            # new per-env repo moving tag (env is in the repo path) => 'latest'
-      legacy_image_tag: { type: string, required: false, default: '' }  # legacy shared-repo moving tag: dev | sandbox | latest
+      aws_region:  { type: string, required: true }            # region of the ECS service
+      role_arn:    { type: string, required: true }            # environment's ECS deploy role
+      ecr_role_arn: { type: string, required: true }           # prod-account role used to push
+      registry:    { type: string, required: true }            # prod account ECR registry
+      ecr_repo:    { type: string, required: true }            # shared repo: tpp-global-payments
+      ecr_region:  { type: string, required: false, default: 'us-east-1' }
+      image_tag:   { type: string, required: true }            # global-payments-<env>-1.0.0.<n>
+      promote_from_tag: { type: string, required: false, default: '' }  # set => promote, don't build
       base_image:  { type: string, required: false, default: '' }   # optional Docker build-arg
       ecs_cluster: { type: string, required: false, default: '' }   # empty => skip ECS deploy
       ecs_service: { type: string, required: false, default: '' }
-      new_ecs_cluster: { type: string, required: false, default: '' }  # prod ramp: 2nd (new-prod) cluster; roll both old+new while traffic ramps
-      new_ecs_service: { type: string, required: false, default: '' }
 
 jobs:
   deploy:
-    # Stays on the amd64 runner with a genuine multi-arch build: this service is X86_64 in dev/sandbox
-    # but ARM64 in prod, so both platforms are required. The arm64 half is therefore QEMU-emulated and
-    # can rarely deadlock (a sibling repo hung ~6h on 2026-07-31), hence the timeout below.
-    # Once dev/sandbox move to ARM64 this can become a native arm64, single-platform build.
+    # amd64 runner with a genuine multi-arch build: X86_64 in dev/sandbox, ARM64 in prod, so both
+    # platforms are required. The arm64 half is QEMU-emulated and can rarely deadlock (a sibling
+    # repo's build hung ~6h on 2026-07-31 and died at GitHub's job ceiling.
     runs-on: ubuntu-latest
-    timeout-minutes: 30   # fail fast instead of burning GitHub's 6h ceiling if the emulated build wedges
+    timeout-minutes: 30
     environment: ${{ inputs.environment == 'production' && 'production' || '' }}
     concurrency:
       group: deploy-${{ inputs.environment }}-${{ github.repository }}
@@ -45,66 +72,190 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        if: ${{ inputs.promote_from_tag == '' }}
 
       - name: Set up QEMU (enables the arm64 build on the amd64 runner)
+        if: ${{ inputs.promote_from_tag == '' }}
         uses: docker/setup-qemu-action@v3
 
-      - name: Set up Docker Buildx (multi-platform builder)
+      - name: Set up Docker Buildx (for --push straight to ECR)
+        if: ${{ inputs.promote_from_tag == '' }}
         uses: docker/setup-buildx-action@v3
 
-      - name: Configure AWS credentials (OIDC)
+      # ---- push phase: prod account ------------------------------------------------
+      - name: Configure AWS credentials for ECR push (prod account)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ inputs.role_arn }}
-          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: ${{ inputs.ecr_role_arn }}
+          aws-region: ${{ inputs.ecr_region }}
 
-      - name: Confirm identity (assumed-role in the target account)
+      - name: Confirm push identity
         run: aws sts get-caller-identity
 
-      - name: Log in to the target ECR
+      - name: Log in to the shared ECR
+        if: ${{ inputs.promote_from_tag == '' }}
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build & push (multi-arch amd64+arm64; git-sha + ${{ inputs.image_tag }})
+      # ---- promote path: no build, no image transfer ------------------------------
+      # Adds a second tag to an image that already exists in this repo, by re-putting its
+      # manifest under a new name. Immutability permits this because the NAME is new; it only
+      # forbids overwriting a name already in use. The manifest is copied verbatim, so a
+      # multi-arch index keeps both architectures — pulling and re-pushing would flatten it.
+      - name: Promote ${{ inputs.promote_from_tag }} -> ${{ inputs.image_tag }}
+        if: ${{ inputs.promote_from_tag != '' }}
         run: |
+          set -euo pipefail
+          REPO="${{ inputs.ecr_repo }}"
+          REGION="${{ inputs.ecr_region }}"
+
+          if aws ecr batch-get-image --region "$REGION" --repository-name "$REPO" \
+               --image-ids imageTag="${{ inputs.image_tag }}" \
+               --query 'images[0].imageId.imageDigest' --output text 2>/dev/null | grep -q '^sha256:'; then
+            echo "${{ inputs.image_tag }} already exists — nothing to promote."
+            exit 0
+          fi
+
+          aws ecr batch-get-image --region "$REGION" --repository-name "$REPO" \
+            --image-ids imageTag="${{ inputs.promote_from_tag }}" \
+            --accepted-media-types \
+              "application/vnd.oci.image.index.v1+json" \
+              "application/vnd.docker.distribution.manifest.list.v2+json" \
+              "application/vnd.oci.image.manifest.v1+json" \
+              "application/vnd.docker.distribution.manifest.v2+json" \
+            --output json > got.json
+
+          jq -e '.images[0]' got.json >/dev/null \
+            || { echo "source tag ${{ inputs.promote_from_tag }} not found in $REPO"; exit 1; }
+
+          # -j, not -r: a digest is a hash of the manifest's exact bytes, and -r appends a
+          # trailing newline. ECR would accept the altered bytes and store a NEW image rather
+          # than a second tag on the existing one, quietly breaking the same-artifact guarantee.
+          jq -j '.images[0].imageManifest' got.json > manifest.json
+          MEDIA=$(jq -r '.images[0].imageManifestMediaType' got.json)
+          SRC_DIGEST=$(jq -r '.images[0].imageId.imageDigest' got.json)
+          echo "source $REPO:${{ inputs.promote_from_tag }} = $SRC_DIGEST ($MEDIA)"
+
+          aws ecr put-image --region "$REGION" --repository-name "$REPO" \
+            --image-tag "${{ inputs.image_tag }}" \
+            --image-manifest file://manifest.json \
+            --image-manifest-media-type "$MEDIA" >/dev/null
+
+          NEW_DIGEST=$(aws ecr batch-get-image --region "$REGION" --repository-name "$REPO" \
+            --image-ids imageTag="${{ inputs.image_tag }}" \
+            --query 'images[0].imageId.imageDigest' --output text)
+          echo "promoted to ${{ inputs.image_tag }} = $NEW_DIGEST"
+          [ "$NEW_DIGEST" = "$SRC_DIGEST" ] \
+            || { echo "MISMATCH: promotion produced a different digest"; exit 1; }
+          echo "Same digest — the promoted image is the artifact that was tested."
+
+      # ---- build path: only when nothing is being promoted -------------------------
+      - name: Build & push (multi-arch amd64+arm64; ${{ inputs.image_tag }})
+        if: ${{ inputs.promote_from_tag == '' }}
+        run: |
+          set -euo pipefail
           IMG="${{ inputs.registry }}/${{ inputs.ecr_repo }}"
           BASE_ARG=""
           if [ -n "${{ inputs.base_image }}" ]; then
             BASE_ARG="--build-arg BASE_IMAGE=${{ inputs.base_image }}"
           fi
-          TAGS=(-t "$IMG:${{ github.sha }}" -t "$IMG:${{ inputs.image_tag }}")
-          # ITPP-273 backward-compat: also push to the legacy repo (same account) until the ECS task def flips.
-          # This is the buildx --push variant, so add legacy tags to the single multi-arch build rather than
-          # docker tag/push (the image is never loaded into the local daemon).
-          if [ -n "${{ inputs.legacy_ecr_repo }}" ]; then
-            LEG="${{ inputs.registry }}/${{ inputs.legacy_ecr_repo }}"
-            TAGS+=(-t "$LEG:${{ github.sha }}" -t "$LEG:${{ inputs.legacy_image_tag }}")
-          fi
           docker buildx build . \
             --platform=linux/amd64,linux/arm64 $BASE_ARG \
             --provenance=false \
-            "${TAGS[@]}" \
+            -t "$IMG:${{ inputs.image_tag }}" \
             --push
 
-      - name: Deploy to ECS (rolls each provided cluster/service; auto-skips empties)
-        if: ${{ inputs.ecs_cluster != '' && inputs.ecs_service != '' }}
+      - name: Record the pushed digest
+        if: ${{ inputs.promote_from_tag == '' }}
+        # batch-get-image, not describe-images: prod-deploy-payments-role can push and read
+        # manifests but has no ecr:DescribeImages, so describe-images fails with AccessDenied.
         run: |
-          REGION="${{ inputs.aws_region }}"
-          roll() {
-            CLUSTER="$1"; SERVICE="$2"
-            if [ -z "$CLUSTER" ] || [ -z "$SERVICE" ]; then return 0; fi
-            echo "== Rolling $SERVICE on $CLUSTER =="
-            aws ecs update-service --region "$REGION" --force-new-deployment --cluster "$CLUSTER" --service "$SERVICE" >/dev/null
-            for i in $(seq 1 60); do
-              STATE=$(aws ecs describe-services --region "$REGION" --cluster "$CLUSTER" --services "$SERVICE" --query 'services[0].deployments[0].rolloutState' --output text)
-              echo "  [$i/60] $SERVICE rolloutState=$STATE"
-              [ "$STATE" = "COMPLETED" ] && { echo "$SERVICE COMPLETED."; return 0; }
-              [ "$STATE" = "FAILED" ] && { echo "$SERVICE FAILED."; return 1; }
-              sleep 30
-            done
-            echo "$SERVICE timed out after 30 min."; return 1
-          }
-          FAILED=0
-          roll "${{ inputs.ecs_cluster }}"   "${{ inputs.ecs_service }}"   || FAILED=1
-          roll "${{ inputs.new_ecs_cluster }}" "${{ inputs.new_ecs_service }}" || FAILED=1
-          [ "$FAILED" = "1" ] && { echo "One or more rollouts failed."; exit 1; }
-          echo "All rollouts COMPLETED."; exit 0
+          set -euo pipefail
+          DIGEST=$(aws ecr batch-get-image \
+            --region "${{ inputs.ecr_region }}" \
+            --repository-name "${{ inputs.ecr_repo }}" \
+            --image-ids imageTag="${{ inputs.image_tag }}" \
+            --query 'images[0].imageId.imageDigest' --output text)
+          echo "Pushed ${{ inputs.ecr_repo }}:${{ inputs.image_tag }} => $DIGEST"
+
+      # ---- deploy phase: the environment's own account -----------------------------
+      - name: Configure AWS credentials for ECS deploy (target account)
+        if: ${{ inputs.ecs_cluster != '' && inputs.ecs_service != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.role_arn }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Deploy to ECS (register a new task-def revision, then roll)
+        if: ${{ inputs.ecs_cluster != '' && inputs.ecs_service != '' }}
+        env:
+          CLUSTER: ${{ inputs.ecs_cluster }}
+          SERVICE: ${{ inputs.ecs_service }}
+          REGION:  ${{ inputs.aws_region }}
+          NEW_IMAGE: ${{ inputs.registry }}/${{ inputs.ecr_repo }}:${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          echo "== $SERVICE on $CLUSTER -> $NEW_IMAGE =="
+
+          # Base the new revision on the FAMILY'S latest ACTIVE revision, not the revision the
+          # service happens to be running. Terraform registers config changes (memory, env vars)
+          # as new revisions the service never points at while CI owns task_definition; building
+          # on the running revision would strand those changes forever. Family-latest picks them
+          # up on the next deploy, which is the standard render-and-register pattern.
+          RUNNING_TD=$(aws ecs describe-services --region "$REGION" --cluster "$CLUSTER" \
+            --services "$SERVICE" --query 'services[0].taskDefinition' --output text)
+          FAMILY=$(aws ecs describe-task-definition --region "$REGION" \
+            --task-definition "$RUNNING_TD" --query 'taskDefinition.family' --output text)
+          aws ecs describe-task-definition --region "$REGION" --task-definition "$FAMILY" \
+            --query 'taskDefinition' > td.json
+
+          # Drift is legitimate (a fresh Terraform config change) but can also be a manual
+          # registration or a post-rollback leftover — surface it either way.
+          LATEST_TD=$(jq -r '"\(.family):\(.revision)"' td.json)
+          if [ "${RUNNING_TD##*/}" != "$LATEST_TD" ]; then
+            echo "::warning::DRIFT: service runs ${RUNNING_TD##*/} but family latest is $LATEST_TD — basing on latest"
+          fi
+
+          # The load-balanced container is the service's primary one. Some services also run a
+          # task-lifetime sidecar built from the SAME image, so every container currently using
+          # the primary's image is updated together; sidecars on other images (the log router)
+          # are left alone.
+          PRIMARY=$(aws ecs describe-services --region "$REGION" --cluster "$CLUSTER" \
+            --services "$SERVICE" --query 'services[0].loadBalancers[0].containerName' --output text)
+          OLD_IMAGE=$(jq -r --arg C "$PRIMARY" \
+            '.containerDefinitions[] | select(.name==$C) | .image' td.json)
+          echo "primary container=$PRIMARY  old image=$OLD_IMAGE"
+
+          # Drop the read-only fields describe-task-definition returns; register the rest.
+          jq --arg OLD "$OLD_IMAGE" --arg NEW "$NEW_IMAGE" \
+            '.containerDefinitions |= map(if .image == $OLD then .image = $NEW else . end)
+             | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                   .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)' \
+            td.json > td-new.json
+
+          NEW_TD=$(aws ecs register-task-definition --region "$REGION" \
+            --cli-input-json file://td-new.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "registered $NEW_TD"
+
+          aws ecs update-service --region "$REGION" --cluster "$CLUSTER" --service "$SERVICE" \
+            --task-definition "$NEW_TD" >/dev/null
+
+          STATE=""
+          for i in $(seq 1 60); do
+            STATE=$(aws ecs describe-services --region "$REGION" --cluster "$CLUSTER" \
+              --services "$SERVICE" --query 'services[0].deployments[0].rolloutState' --output text)
+            echo "  [$i/60] rolloutState=$STATE"
+            [ "$STATE" = "COMPLETED" ] && break
+            [ "$STATE" = "FAILED" ] && { echo "rollout FAILED"; exit 1; }
+            sleep 30
+          done
+          [ "$STATE" = "COMPLETED" ] || { echo "timed out after 30 min"; exit 1; }
+
+          # A COMPLETED rollout is not proof the new revision is live — a circuit-breaker
+          # rollback also reports COMPLETED. Assert the primary deployment is our revision.
+          LIVE_TD=$(aws ecs describe-services --region "$REGION" --cluster "$CLUSTER" \
+            --services "$SERVICE" \
+            --query "services[0].deployments[?status=='PRIMARY'].taskDefinition | [0]" --output text)
+          echo "live task definition = $LIVE_TD"
+          [ "$LIVE_TD" = "$NEW_TD" ] || { echo "ROLLED BACK: live is $LIVE_TD, expected $NEW_TD"; exit 1; }
+          echo "$SERVICE is live on $NEW_TD (image $NEW_IMAGE)"

@@ -1,5 +1,8 @@
-# globalpayments — deploy to Dev (Gateway account, us-east-2). Auto on push to main.
+# globalpayments-python-service — deploy to Dev. Auto on push to main.
 # Thin caller of the reusable _deploy.yml.
+#
+# The image goes to the shared repo in the TPP prod account; the ECS service it rolls lives in
+# the Gateway account (us-east-2) and pulls that image cross-account. Hence the two roles.
 name: deploy-develop
 
 on:
@@ -17,10 +20,9 @@ jobs:
       environment: dev
       aws_region:  us-east-2
       role_arn:    ${{ vars.DEV_ROLE_ARN }}
-      registry:    ${{ vars.DEV_REGISTRY }}
-      ecr_repo:    tpp-dev/global-payments
-      legacy_ecr_repo: tpp-gateway/globalpayments-python-service
-      image_tag:   latest
-      legacy_image_tag: dev
+      ecr_role_arn: ${{ vars.PROD_ROLE_ARN }}      # prod-deploy-payments-role: pushes for every env (decision #17)
+      registry:    ${{ vars.PROD_REGISTRY }}       # shared repos live in the prod account
+      ecr_repo:    tpp-global-payments
+      image_tag:   global-payments-dev-1.0.0.${{ github.run_number }}
       ecs_cluster: tpp-dev-ecs-cluster
       ecs_service: tpp-dev-global-payments-service
