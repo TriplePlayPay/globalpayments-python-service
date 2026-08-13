@@ -56,4 +56,8 @@ COPY --from=builder-base $PYSETUP_PATH $PYSETUP_PATH
 COPY ./service /app/service
 COPY ./app.py /app/
 WORKDIR /app
-CMD ["python", "app.py"]
+# Datadog APM (ITPP-375): ddtrace-run auto-instruments Sanic/aiohttp. Off by default
+# (DD_TRACE_ENABLED=false) so it is a genuine no-op until infra flips it per env - same prod-safe
+# pattern as payments.
+ENV DD_TRACE_ENABLED=false
+CMD ["ddtrace-run", "python", "app.py"]
