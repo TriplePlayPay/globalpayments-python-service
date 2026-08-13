@@ -25,7 +25,7 @@ pytest = "8.1.1"
 globalpayments-python-sdk = { git = "https://github.com/TriplePlayPay/globalpayments-python-sdk.git", branch = "main" }
 python-json-logger = "^2.0.7"
 sanic-ext = "^23.12.0"
-ddtrace = "3.19.8" # Datadog APM (ITPP-375); ddtrace-run in the Dockerfile, off by default
+ddtrace = { version = "4.8.2", python = ">=3.11,<3.15" } # Datadog APM (ITPP-375); ddtrace-run, off by default. 4.8.2+ fixes CVE-2026-50271 (baggage-header DoS); marker: ddtrace 4.x caps at py<3.15 (we run 3.11)
 
 
 [tool.poetry.group.dev]
