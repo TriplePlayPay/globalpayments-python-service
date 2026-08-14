@@ -23,7 +23,10 @@ LOGGING = {
     "filters": {"sensitive_data_filter": {"()": SensitiveDataFilter}},
     "formatters": {
         "json": {
-            "format": "%(asctime)s - %(name)s - %(levelname)s - %(module)s - %(funcName)s - %(lineno)d - %(message)s",
+            # dd.* fields (ITPP-375): ddtrace log-trace correlation. With DD_LOGS_INJECTION=true the
+            # tracer populates these; when tracing is off they render null (JsonFormatter uses
+            # record.__dict__.get, so absent fields don't raise) — prod-safe.
+            "format": "%(asctime)s - %(name)s - %(levelname)s - %(module)s - %(funcName)s - %(lineno)d - %(message)s - %(dd.service)s - %(dd.env)s - %(dd.version)s - %(dd.trace_id)s - %(dd.span_id)s",
             "datefmt": "%Y-%m-%dT%H:%M:%SZ",
             "class": "pythonjsonlogger.jsonlogger.JsonFormatter",
         }
