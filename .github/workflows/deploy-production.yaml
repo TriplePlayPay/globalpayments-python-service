@@ -1,27 +1,15 @@
-# globalpayments-python-service — promote to Production (TPP account, us-east-1). Manual, gated.
+# globalpayments-python-service — deploy to Production (TPP account, us-east-1). Manual only, gated.
 # Pauses at the 'production' Environment's required reviewers before anything runs.
 #
-# This does NOT build. You name a version that has already run in sandbox, and it adds a prod tag
-# to that same image, so the reviewer approves a specific tested artifact rather than a build that
-# has not happened yet.
-#
-# The previous "branch must be main" guard is gone, deliberately: nothing builds from the checked
-# out branch any more, so dispatching from elsewhere would promote the identical artifact. The real
-# controls are the reviewer gate and the fact that only a tested version can be named.
-#
-# The old v1 cluster (payments-prod-payments-cluster) is deliberately NOT rolled any more — the
-# ramp finished 2026-08-05 and leaving it frozen on its last good image is what makes it a rollback.
+# Prod builds its own image from the dispatched branch (normally main) and re-points
+# global-payments-prod-latest at it. There is no promote from sandbox, so prod runs its own
+# build of the same source rather than the sandbox-tested bytes.
 name: deploy-production
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to promote — the N from global-payments-sandbox-1.0.0.N (e.g. 52)'
-        required: true
-        type: string
+  workflow_dispatch: {}
 
-run-name: Promote global-payments 1.0.0.${{ inputs.version }} to production
+run-name: Deploy global-payments to production (build from ${{ github.ref_name }})
 
 permissions:
   id-token: write
@@ -37,7 +25,6 @@ jobs:
       ecr_role_arn: ${{ vars.PROD_ROLE_ARN }}      # prod-deploy-payments-role: pushes for every env (decision #17)
       registry:    ${{ vars.PROD_REGISTRY }}       # shared repos live in the prod account
       ecr_repo:    tpp-global-payments
-      promote_from_tag: global-payments-sandbox-1.0.0.${{ inputs.version }}
-      image_tag:        global-payments-prod-1.0.0.${{ inputs.version }}
+      image_tag:   global-payments-prod-latest
       ecs_cluster: tpp-prod-ecs-cluster
       ecs_service: tpp-prod-global-payments-service
