@@ -23,6 +23,6 @@ jobs:
       ecr_role_arn: ${{ vars.PROD_ROLE_ARN }}      # prod-deploy-payments-role: pushes for every env (decision #17)
       registry:    ${{ vars.PROD_REGISTRY }}       # shared repos live in the prod account
       ecr_repo:    tpp-global-payments
-      image_tag:   global-payments-dev-1.0.0.${{ github.run_number }}
+      image_tag:   global-payments-dev-latest
       ecs_cluster: tpp-dev-ecs-cluster
       ecs_service: tpp-dev-global-payments-service

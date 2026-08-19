@@ -13,9 +13,9 @@
 # Container builds are not reproducible, so a rebuild genuinely differs: our own dev and sandbox
 # base images, built ten seconds apart from identical source, have different digests.
 #
-#   merge -> dev builds  global-payments-dev-1.0.0.N
-#              -> sandbox promotes that digest as global-payments-sandbox-1.0.0.N
-#                   -> prod promotes it as global-payments-prod-1.0.0.N (manual, gated)
+#   merge -> dev builds  global-payments-dev-latest
+#              -> sandbox promotes that digest as global-payments-sandbox-latest
+#                   -> prod promotes it as global-payments-prod-latest (manual, gated)
 #
 # The version number N comes from the dev build and travels unchanged, so one number identifies
 # one artifact in every environment.
@@ -26,9 +26,8 @@
 # dev/sandbox ECS pull the image cross-account; the repository policy and the task-exec role
 # policies for that are already applied.
 #
-# Tags are IMMUTABLE in the shared repo, so a tag can never be overwritten. That is why the
-# git-sha tag is gone: re-running a workflow on the same commit would try to push an existing
-# tag and fail. github.run_number always moves, so the version tag is always new.
+# Tags are MOVING (-latest per environment). A deploy re-points the tag; the digest it moved
+# off goes untagged and the repo's 7-day lifecycle rule deletes it.
 #
 # Because the tag is fixed rather than moving, `force-new-deployment` can no longer pick up a
 # new image — it would just re-pull the same tag. The deploy step therefore registers a new
@@ -97,23 +96,15 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       # ---- promote path: no build, no image transfer ------------------------------
-      # Adds a second tag to an image that already exists in this repo, by re-putting its
-      # manifest under a new name. Immutability permits this because the NAME is new; it only
-      # forbids overwriting a name already in use. The manifest is copied verbatim, so a
-      # multi-arch index keeps both architectures — pulling and re-pushing would flatten it.
+      # Re-points the destination tag at the digest the source tag holds, by re-putting the
+      # manifest under that name. The manifest is copied verbatim, so a multi-arch index keeps
+      # both architectures — pulling and re-pushing would flatten it.
       - name: Promote ${{ inputs.promote_from_tag }} -> ${{ inputs.image_tag }}
         if: ${{ inputs.promote_from_tag != '' }}
         run: |
           set -euo pipefail
           REPO="${{ inputs.ecr_repo }}"
           REGION="${{ inputs.ecr_region }}"
-
-          if aws ecr batch-get-image --region "$REGION" --repository-name "$REPO" \
-               --image-ids imageTag="${{ inputs.image_tag }}" \
-               --query 'images[0].imageId.imageDigest' --output text 2>/dev/null | grep -q '^sha256:'; then
-            echo "${{ inputs.image_tag }} already exists — nothing to promote."
-            exit 0
-          fi
 
           aws ecr batch-get-image --region "$REGION" --repository-name "$REPO" \
             --image-ids imageTag="${{ inputs.promote_from_tag }}" \
@@ -134,6 +125,16 @@ jobs:
           MEDIA=$(jq -r '.images[0].imageManifestMediaType' got.json)
           SRC_DIGEST=$(jq -r '.images[0].imageId.imageDigest' got.json)
           echo "source $REPO:${{ inputs.promote_from_tag }} = $SRC_DIGEST ($MEDIA)"
+
+          # Moving tags: if the destination already points at this digest it is a re-run —
+          # nothing to move. Any other digest gets re-pointed (the repo is mutable).
+          CUR=$(aws ecr batch-get-image --region "$REGION" --repository-name "$REPO" \
+            --image-ids imageTag="${{ inputs.image_tag }}" \
+            --query 'images[0].imageId.imageDigest' --output text 2>/dev/null || true)
+          if [ "$CUR" = "$SRC_DIGEST" ]; then
+            echo "${{ inputs.image_tag }} already points at $SRC_DIGEST — nothing to move."
+            exit 0
+          fi
 
           aws ecr put-image --region "$REGION" --repository-name "$REPO" \
             --image-tag "${{ inputs.image_tag }}" \
