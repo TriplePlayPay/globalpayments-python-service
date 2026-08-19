@@ -125,7 +125,7 @@ jobs:
           MEDIA=$(jq -r '.images[0].imageManifestMediaType' got.json)
           SRC_DIGEST=$(jq -r '.images[0].imageId.imageDigest' got.json)
           echo "source $REPO:${{ inputs.promote_from_tag }} = $SRC_DIGEST ($MEDIA)"
-
+
           # Moving tags: if the destination already points at this digest it is a re-run —
           # nothing to move. Any other digest gets re-pointed (the repo is mutable).
           CUR=$(aws ecr batch-get-image --region "$REGION" --repository-name "$REPO" \
