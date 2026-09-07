@@ -193,6 +193,11 @@ jobs:
           SERVICE: ${{ inputs.ecs_service }}
           REGION:  ${{ inputs.aws_region }}
           NEW_IMAGE: ${{ inputs.registry }}/${{ inputs.ecr_repo }}:${{ inputs.image_tag }}
+          # Datadog version/build-number source (ITPP-422) - via env, not inline, to avoid script
+          # injection (SonarQube S7630).
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          PROMOTE_FROM_TAG: ${{ inputs.promote_from_tag }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
           echo "== $SERVICE on $CLUSTER -> $NEW_IMAGE =="
@@ -226,9 +231,32 @@ jobs:
             '.containerDefinitions[] | select(.name==$C) | .image' td.json)
           echo "primary container=$PRIMARY  old image=$OLD_IMAGE"
 
+          # Datadog version + build number (ITPP-422). Source the number from the tag being deployed
+          # (promote source if promoting, else the built image tag): its trailing digits, falling
+          # back to this run's number if the tag has no numeric suffix (e.g. *-latest). So DD_VERSION
+          # is always 1.0.0.<digits>; version-shaped, swaps to real semver at ITPP-312. buildnumber is
+          # merged into DD_TAGS (keeps Terraform's app:tpp, stale buildnumber stripped so no accumulation).
+          SRC_TAG="${PROMOTE_FROM_TAG:-$IMAGE_TAG}"
+          BUILD_NUMBER="${SRC_TAG##*.}"
+          case "$BUILD_NUMBER" in ''|*[!0-9]*) BUILD_NUMBER="$RUN_NUMBER" ;; esac
+          DD_VERSION="1.0.0.${BUILD_NUMBER}"
+          echo "DD_VERSION=$DD_VERSION  buildnumber=$BUILD_NUMBER"
+
           # Drop the read-only fields describe-task-definition returns; register the rest.
           jq --arg OLD "$OLD_IMAGE" --arg NEW "$NEW_IMAGE" \
-            '.containerDefinitions |= map(if .image == $OLD then .image = $NEW else . end)
+             --arg PRIMARY "$PRIMARY" --arg VER "$DD_VERSION" --arg BN "$BUILD_NUMBER" \
+            '.containerDefinitions |= map(
+               (if .image == $OLD then .image = $NEW else . end)
+               | if (.name == $PRIMARY or .name == "datadog-agent") then
+                   .environment = (
+                     [ (.environment // [])[] | select(.name != "DD_VERSION") ]
+                     | map(if .name == "DD_TAGS"
+                           then .value = (((.value | split(",")
+                                            | map(select(startswith("buildnumber:") | not)))
+                                           + ["buildnumber:" + $BN]) | join(","))
+                           else . end)
+                   ) + [ {name: "DD_VERSION", value: $VER} ]
+                 else . end)
              | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
                    .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)' \
             td.json > td-new.json
