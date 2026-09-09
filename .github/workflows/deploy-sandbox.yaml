@@ -28,4 +28,4 @@ jobs:
       promote_from_tag: global-payments-dev-latest
       image_tag:        global-payments-sandbox-latest
       ecs_cluster: tpp-sandbox-ecs-cluster
-      ecs_service: tpp-sandbox-global-payments-service
+      ecs_service: tpp-global-payments
