@@ -27,4 +27,4 @@ jobs:
       ecr_repo:    tpp-global-payments
       image_tag:   global-payments-prod-latest
       ecs_cluster: tpp-prod-ecs-cluster
-      ecs_service: tpp-prod-global-payments-service
+      ecs_service: tpp-global-payments
