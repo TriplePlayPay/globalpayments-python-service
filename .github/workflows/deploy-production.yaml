@@ -1,22 +1,55 @@
-# globalpayments-python-service — deploy to Production (TPP account, us-east-1). Manual only, gated.
-# Pauses at the 'production' Environment's required reviewers before anything runs.
-#
-# Prod builds its own image from the dispatched branch (normally main) and re-points
-# global-payments-prod-latest at it. There is no promote from sandbox, so prod runs its own
-# build of the same source rather than the sandbox-tested bytes.
+# globalpayments-python-service — promote the version sandbox is running to Production.
+# Manual only, gated at the 'production' environment. No build: the sandbox digest is re-tagged
+# as global-payments-prod-1.0.0.N, same N.
 name: deploy-production
+run-name: Promote the global-payments version sandbox is running to production
 
 on:
   workflow_dispatch: {}
-
-run-name: Deploy global-payments to production (build from ${{ github.ref_name }})
 
 permissions:
   id-token: write
   contents: read
 
+concurrency:
+  group: production-promote-${{ github.repository }}
+
 jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      sandbox_tag: ${{ steps.running.outputs.sandbox_tag }}
+      prod_tag: ${{ steps.running.outputs.prod_tag }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.SANDBOX_ROLE_ARN }}
+          aws-region: us-east-2
+
+      # The version sandbox is running, not the highest tag in ECR: a tag is pushed before its rollout is proven.
+      - name: Resolve the version sandbox is running
+        id: running
+        run: |
+          set -euo pipefail
+          SVC=$(aws ecs describe-services --region us-east-2 --cluster tpp-sandbox-ecs-cluster \
+            --services tpp-global-payments --query 'services[0]' --output json)
+          DEPLOYS=$(jq '.deployments | length' <<<"$SVC")
+          STATE=$(jq -r '.deployments[] | select(.status=="PRIMARY") | .rolloutState' <<<"$SVC")
+          [ "$DEPLOYS" = "1" ] && [ "$STATE" = "COMPLETED" ] \
+            || { echo "sandbox rollout not settled ($DEPLOYS deployments, PRIMARY $STATE), try again once it finishes"; exit 1; }
+          TD=$(jq -r '.deployments[0].taskDefinition' <<<"$SVC")
+          CONTAINER=$(jq -r '.loadBalancers[0].containerName' <<<"$SVC")
+          IMAGE=$(aws ecs describe-task-definition --region us-east-2 --task-definition "$TD" \
+            --query "taskDefinition.containerDefinitions[?name=='$CONTAINER'].image | [0]" --output text)
+          TAG=${IMAGE##*:}
+          N=$(grep -oP '^global-payments-sandbox-1\.0\.0\.\K[0-9]+$' <<<"$TAG" || true)
+          [ -n "$N" ] || { echo "sandbox runs $IMAGE, not a versioned global-payments-sandbox-1.0.0.N image, nothing to promote"; exit 1; }
+          echo "sandbox runs $TAG on ${TD##*/}, will promote it as global-payments-prod-1.0.0.$N"
+          echo "sandbox_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "prod_tag=global-payments-prod-1.0.0.$N" >> "$GITHUB_OUTPUT"
+
   production:
+    needs: resolve
     uses: ./.github/workflows/_deploy.yml
     with:
       environment: production
@@ -25,6 +58,7 @@ jobs:
       ecr_role_arn: ${{ vars.PROD_ROLE_ARN }}      # prod-deploy-payments-role: pushes for every env (decision #17)
       registry:    ${{ vars.PROD_REGISTRY }}       # shared repos live in the prod account
       ecr_repo:    tpp-global-payments
-      image_tag:   global-payments-prod-latest
+      promote_from_tag: ${{ needs.resolve.outputs.sandbox_tag }}
+      image_tag:   ${{ needs.resolve.outputs.prod_tag }}
       ecs_cluster: tpp-prod-ecs-cluster
       ecs_service: tpp-global-payments
