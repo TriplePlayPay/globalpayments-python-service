@@ -1,22 +1,47 @@
-# globalpayments-python-service — promote to Sandbox. Runs once deploy-develop succeeds.
-#
-# This does NOT build. It adds a sandbox tag to the image dev just produced, so sandbox runs the
-# exact artifact dev ran rather than a rebuild of the same commit.
-# workflow_run only fires for workflows on the default branch, so this is first proven after merge.
+# globalpayments-python-service — versioned build to Sandbox, in parallel with dev.
+# Sandbox is the only place a version is minted; the next 1.0.0.N comes from what ECR already holds.
 name: deploy-sandbox
+run-name: Deploy global-payments to sandbox (versioned build)
 
+# types: requested = sandbox starts in parallel with dev, not after it.
+# No workflow_dispatch on purpose: dev is the only environment for feature-branch testing.
 on:
   workflow_run:
     workflows: [ deploy-develop ]
-    types: [ completed ]
+    types: [ requested ]
 
 permissions:
   id-token: write
   contents: read
 
+# Serialises whole runs so two triggers can't both read max=N and mint the same version.
+concurrency:
+  group: sandbox-versioning-${{ github.repository }}
+
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.mint.outputs.tag }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.PROD_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Mint the next sandbox version from ECR
+        id: mint
+        run: |
+          set -euo pipefail
+          TAGS=$(aws ecr list-images --region us-east-1 --repository-name tpp-global-payments \
+            --filter tagStatus=TAGGED --query 'imageIds[].imageTag' --output text)
+          MAX=$(tr '\t' '\n' <<<"$TAGS" | grep -oP '^global-payments-sandbox-1\.0\.0\.\K[0-9]+$' | sort -n | tail -1 || true)
+          TAG="global-payments-sandbox-1.0.0.$(( ${MAX:-0} + 1 ))"
+          echo "minted $TAG (previous max: ${MAX:-none})"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
   sandbox:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    needs: version
     uses: ./.github/workflows/_deploy.yml
     with:
       environment: sandbox
@@ -25,7 +50,6 @@ jobs:
       ecr_role_arn: ${{ vars.PROD_ROLE_ARN }}      # prod-deploy-payments-role: pushes for every env (decision #17)
       registry:    ${{ vars.PROD_REGISTRY }}       # shared repos live in the prod account
       ecr_repo:    tpp-global-payments
-      promote_from_tag: global-payments-dev-latest
-      image_tag:        global-payments-sandbox-latest
+      image_tag:   ${{ needs.version.outputs.tag }}
       ecs_cluster: tpp-sandbox-ecs-cluster
       ecs_service: tpp-global-payments
