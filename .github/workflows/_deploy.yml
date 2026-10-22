@@ -101,13 +101,18 @@ jobs:
       # both architectures — pulling and re-pushing would flatten it.
       - name: Promote ${{ inputs.promote_from_tag }} -> ${{ inputs.image_tag }}
         if: ${{ inputs.promote_from_tag != '' }}
+        env:
+          ECR_REPO: ${{ inputs.ecr_repo }}
+          ECR_REGION: ${{ inputs.ecr_region }}
+          PROMOTE_FROM_TAG: ${{ inputs.promote_from_tag }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           set -euo pipefail
-          REPO="${{ inputs.ecr_repo }}"
-          REGION="${{ inputs.ecr_region }}"
+          REPO="${ECR_REPO}"
+          REGION="${ECR_REGION}"
 
           aws ecr batch-get-image --region "$REGION" --repository-name "$REPO" \
-            --image-ids imageTag="${{ inputs.promote_from_tag }}" \
+            --image-ids imageTag="${PROMOTE_FROM_TAG}" \
             --accepted-media-types \
               "application/vnd.oci.image.index.v1+json" \
               "application/vnd.docker.distribution.manifest.list.v2+json" \
@@ -116,7 +121,7 @@ jobs:
             --output json > got.json
 
           jq -e '.images[0]' got.json >/dev/null \
-            || { echo "source tag ${{ inputs.promote_from_tag }} not found in $REPO"; exit 1; }
+            || { echo "source tag ${PROMOTE_FROM_TAG} not found in $REPO"; exit 1; }
 
           # -j, not -r: a digest is a hash of the manifest's exact bytes, and -r appends a
           # trailing newline. ECR would accept the altered bytes and store a NEW image rather
@@ -124,27 +129,27 @@ jobs:
           jq -j '.images[0].imageManifest' got.json > manifest.json
           MEDIA=$(jq -r '.images[0].imageManifestMediaType' got.json)
           SRC_DIGEST=$(jq -r '.images[0].imageId.imageDigest' got.json)
-          echo "source $REPO:${{ inputs.promote_from_tag }} = $SRC_DIGEST ($MEDIA)"
+          echo "source $REPO:${PROMOTE_FROM_TAG} = $SRC_DIGEST ($MEDIA)"
 
           # Moving tags: if the destination already points at this digest it is a re-run —
           # nothing to move. Any other digest gets re-pointed (the repo is mutable).
           CUR=$(aws ecr batch-get-image --region "$REGION" --repository-name "$REPO" \
-            --image-ids imageTag="${{ inputs.image_tag }}" \
+            --image-ids imageTag="${IMAGE_TAG}" \
             --query 'images[0].imageId.imageDigest' --output text 2>/dev/null || true)
           if [ "$CUR" = "$SRC_DIGEST" ]; then
-            echo "${{ inputs.image_tag }} already points at $SRC_DIGEST — nothing to move."
+            echo "${IMAGE_TAG} already points at $SRC_DIGEST — nothing to move."
             exit 0
           fi
 
           aws ecr put-image --region "$REGION" --repository-name "$REPO" \
-            --image-tag "${{ inputs.image_tag }}" \
+            --image-tag "${IMAGE_TAG}" \
             --image-manifest file://manifest.json \
             --image-manifest-media-type "$MEDIA" >/dev/null
 
           NEW_DIGEST=$(aws ecr batch-get-image --region "$REGION" --repository-name "$REPO" \
-            --image-ids imageTag="${{ inputs.image_tag }}" \
+            --image-ids imageTag="${IMAGE_TAG}" \
             --query 'images[0].imageId.imageDigest' --output text)
-          echo "promoted to ${{ inputs.image_tag }} = $NEW_DIGEST"
+          echo "promoted to ${IMAGE_TAG} = $NEW_DIGEST"
           [ "$NEW_DIGEST" = "$SRC_DIGEST" ] \
             || { echo "MISMATCH: promotion produced a different digest"; exit 1; }
           echo "Same digest — the promoted image is the artifact that was tested."
@@ -152,31 +157,40 @@ jobs:
       # ---- build path: only when nothing is being promoted -------------------------
       - name: Build & push (multi-arch amd64+arm64; ${{ inputs.image_tag }})
         if: ${{ inputs.promote_from_tag == '' }}
+        env:
+          REGISTRY: ${{ inputs.registry }}
+          ECR_REPO: ${{ inputs.ecr_repo }}
+          BASE_IMAGE: ${{ inputs.base_image }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           set -euo pipefail
-          IMG="${{ inputs.registry }}/${{ inputs.ecr_repo }}"
+          IMG="${REGISTRY}/${ECR_REPO}"
           BASE_ARG=""
-          if [ -n "${{ inputs.base_image }}" ]; then
-            BASE_ARG="--build-arg BASE_IMAGE=${{ inputs.base_image }}"
+          if [ -n "${BASE_IMAGE}" ]; then
+            BASE_ARG="--build-arg BASE_IMAGE=${BASE_IMAGE}"
           fi
           docker buildx build . \
             --platform=linux/amd64,linux/arm64 $BASE_ARG \
             --provenance=false \
-            -t "$IMG:${{ inputs.image_tag }}" \
+            -t "$IMG:${IMAGE_TAG}" \
             --push
 
       - name: Record the pushed digest
         if: ${{ inputs.promote_from_tag == '' }}
         # batch-get-image, not describe-images: prod-deploy-payments-role can push and read
         # manifests but has no ecr:DescribeImages, so describe-images fails with AccessDenied.
+        env:
+          ECR_REGION: ${{ inputs.ecr_region }}
+          ECR_REPO: ${{ inputs.ecr_repo }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           set -euo pipefail
           DIGEST=$(aws ecr batch-get-image \
-            --region "${{ inputs.ecr_region }}" \
-            --repository-name "${{ inputs.ecr_repo }}" \
-            --image-ids imageTag="${{ inputs.image_tag }}" \
+            --region "${ECR_REGION}" \
+            --repository-name "${ECR_REPO}" \
+            --image-ids imageTag="${IMAGE_TAG}" \
             --query 'images[0].imageId.imageDigest' --output text)
-          echo "Pushed ${{ inputs.ecr_repo }}:${{ inputs.image_tag }} => $DIGEST"
+          echo "Pushed ${ECR_REPO}:${IMAGE_TAG} => $DIGEST"
 
       # ---- deploy phase: the environment's own account -----------------------------
       - name: Configure AWS credentials for ECS deploy (target account)
