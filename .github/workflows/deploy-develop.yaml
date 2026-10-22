@@ -7,7 +7,7 @@ name: deploy-develop
 
 on:
   push:
-    branches: [ main, deva/workflow-script-injection ]
+    branches: [ main ]
 
 permissions:
   id-token: write
