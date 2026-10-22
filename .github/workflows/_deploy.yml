@@ -69,7 +69,56 @@ jobs:
     permissions:
       id-token: write   # OIDC
       contents: read
+      checks: read
+      pull-requests: read
     steps:
+      # Dev only warns; sandbox and production stop here unless the commit's PR passed the Mend App security check.
+      - name: Security gate (PR checks of this commit)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
+          DEPLOY_ENV: ${{ inputs.environment }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys, urllib.request
+
+          repo, commit, env = os.environ["REPO"], os.environ["COMMIT"], os.environ["DEPLOY_ENV"]
+          enforce = env != "dev"
+          required = ("Mend Security Check",)
+
+          def get(path):
+              req = urllib.request.Request("https://api.github.com/repos/%s/%s" % (repo, path), headers={
+                  "Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": "application/vnd.github+json"})
+              return json.load(urllib.request.urlopen(req, timeout=30))
+
+          def verdict():
+              pulls = [p for p in get("commits/%s/pulls" % commit) if p["merged_at"] or p["head"]["sha"] == commit]
+              if not pulls:
+                  return None, "no pull request found for %s" % commit[:8]
+              pr = pulls[0]
+              runs = get("commits/%s/check-runs?per_page=100" % pr["head"]["sha"])["check_runs"]
+              latest = {}
+              for r in sorted(runs, key=lambda r: r.get("started_at") or ""):
+                  latest[r["name"]] = r
+              bad = ["%s=%s" % (n, latest[n]["conclusion"] if n in latest else "missing")
+                     for n in required if n not in latest or latest[n]["conclusion"] not in ("success", "neutral")]
+              return pr["number"], ", ".join(bad)
+
+          pr, problem = verdict()
+          scope = "PR #%s" % pr if pr else "commit %s" % commit[:8]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write("### Security gate (%s): %s\n\n%s\n" % (
+                  env, "passed" if not problem else ("BLOCKED" if enforce else "warning"),
+                  "%s: %s" % (scope, problem or "Mend Security Check passed")))
+          if not problem:
+              print("Security gate passed: %s has Mend Security Check green" % scope)
+          elif enforce:
+              sys.exit("::error::Security gate blocked the %s build: %s (%s)" % (env, problem, scope))
+          else:
+              print("::warning::Security gate (dev, warn only): %s (%s)" % (problem, scope))
+          PY
+
       - uses: actions/checkout@v4
         if: ${{ inputs.promote_from_tag == '' }}
 
