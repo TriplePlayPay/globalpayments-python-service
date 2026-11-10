@@ -1,0 +1,130 @@
+name: rollback
+
+on:
+  workflow_dispatch: {}
+
+run-name: global-payments rollback prod one version
+
+permissions:
+  id-token: write
+  contents: read
+  checks: read
+  pull-requests: read
+
+env:
+  GATEWAY_ROLE: ${{ vars.DEV_ROLE_ARN }}
+  PROD_ROLE: ${{ vars.PROD_ROLE_ARN }}
+
+jobs:
+  # Approval comes first so the plan reads what prod runs at the moment of approval.
+  prod-approval:
+    name: Approval for prod
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - run: echo "Prod rollback approved"
+
+  plan:
+    name: Plan
+    needs: prod-approval
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.plan.outputs.image_tag }}
+      rolled_back: ${{ steps.plan.outputs.rolled_back }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - uses: aws-actions/configure-aws-credentials@v4
+        id: gw
+        with:
+          role-to-assume: ${{ env.GATEWAY_ROLE }}
+          aws-region: us-east-2
+          output-credentials: true
+      - uses: aws-actions/configure-aws-credentials@v4
+        id: prod
+        with:
+          role-to-assume: ${{ env.PROD_ROLE }}
+          aws-region: us-east-1
+          output-credentials: true
+      - name: Plan
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GW_KEY: ${{ steps.gw.outputs.aws-access-key-id }}
+          GW_SECRET: ${{ steps.gw.outputs.aws-secret-access-key }}
+          GW_TOKEN: ${{ steps.gw.outputs.aws-session-token }}
+          PROD_KEY: ${{ steps.prod.outputs.aws-access-key-id }}
+          PROD_SECRET: ${{ steps.prod.outputs.aws-secret-access-key }}
+          PROD_TOKEN: ${{ steps.prod.outputs.aws-session-token }}
+        run: python3 .github/scripts/pipeline.py rollback
+
+  prod:
+    name: Roll prod back
+    needs: plan
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: prod
+      aws_region: us-east-1
+      role_arn: ${{ vars.PROD_ROLE_ARN }}
+      ecr_role_arn: ${{ vars.PROD_ROLE_ARN }}
+      registry: ${{ vars.PROD_REGISTRY }}
+      ecr_repo: tpp-global-payments
+      image_tag: ${{ needs.plan.outputs.image_tag }}
+      promote_from_tag: ${{ needs.plan.outputs.image_tag }}
+      ecs_cluster: tpp-prod-ecs-cluster
+      ecs_service: tpp-global-payments
+      security_gate: false
+
+  mark:
+    name: Mark the bad version
+    needs: [plan, prod]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - uses: aws-actions/configure-aws-credentials@v4
+        id: prod
+        with:
+          role-to-assume: ${{ env.PROD_ROLE }}
+          aws-region: us-east-1
+          output-credentials: true
+      - name: Mark
+        env:
+          VERSION: ${{ needs.plan.outputs.rolled_back }}
+          PROD_KEY: ${{ steps.prod.outputs.aws-access-key-id }}
+          PROD_SECRET: ${{ steps.prod.outputs.aws-secret-access-key }}
+          PROD_TOKEN: ${{ steps.prod.outputs.aws-session-token }}
+        run: python3 .github/scripts/pipeline.py mark
+
+  where:
+    name: Deployment summary
+    needs: [plan, prod]
+    if: ${{ always() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - uses: aws-actions/configure-aws-credentials@v4
+        id: gw
+        with:
+          role-to-assume: ${{ env.GATEWAY_ROLE }}
+          aws-region: us-east-2
+          output-credentials: true
+      - uses: aws-actions/configure-aws-credentials@v4
+        id: prod
+        with:
+          role-to-assume: ${{ env.PROD_ROLE }}
+          aws-region: us-east-1
+          output-credentials: true
+      - name: What runs where
+        env:
+          GW_KEY: ${{ steps.gw.outputs.aws-access-key-id }}
+          GW_SECRET: ${{ steps.gw.outputs.aws-secret-access-key }}
+          GW_TOKEN: ${{ steps.gw.outputs.aws-session-token }}
+          PROD_KEY: ${{ steps.prod.outputs.aws-access-key-id }}
+          PROD_SECRET: ${{ steps.prod.outputs.aws-secret-access-key }}
+          PROD_TOKEN: ${{ steps.prod.outputs.aws-session-token }}
+        run: python3 .github/scripts/pipeline.py where
