@@ -1,32 +1,193 @@
-# globalpayments-python-service — deploy to Production (TPP account, us-east-1). Manual only, gated.
-# Pauses at the 'production' Environment's required reviewers before anything runs.
-#
-# Prod builds its own image from the dispatched branch (normally main) and re-points
-# global-payments-prod-latest at it. There is no promote from sandbox, so prod runs its own
-# build of the same source rather than the sandbox-tested bytes.
+# One run takes a build through dev, QA, sandbox and prod, with an approval before each of the last three.
 name: deploy-production
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Branch to deploy (main or hotfix/* can go to sandbox and prod; other branches stop after QA)
+        type: string
+        default: main
 
-run-name: Deploy global-payments to production (build from ${{ github.ref_name }})
+run-name: global-payments from ${{ inputs.source }}
 
 permissions:
   id-token: write
+  actions: read
   contents: read
   checks: read
   pull-requests: read
 
+env:
+  GATEWAY_ROLE: ${{ vars.DEV_ROLE_ARN }}
+  PROD_ROLE: ${{ vars.PROD_ROLE_ARN }}
+
 jobs:
-  production:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.plan.outputs.sha }}
+      since: ${{ steps.plan.outputs.since }}
+      image_tag: ${{ steps.plan.outputs.image_tag }}
+      extra_tags: ${{ steps.plan.outputs.extra_tags }}
+      labels: ${{ steps.plan.outputs.labels }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - uses: aws-actions/configure-aws-credentials@v4
+        id: gw
+        with:
+          role-to-assume: ${{ env.GATEWAY_ROLE }}
+          aws-region: us-east-2
+          output-credentials: true
+      - uses: aws-actions/configure-aws-credentials@v4
+        id: prod
+        with:
+          role-to-assume: ${{ env.PROD_ROLE }}
+          aws-region: us-east-1
+          output-credentials: true
+      - name: Plan
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ inputs.source }}
+          GW_KEY: ${{ steps.gw.outputs.aws-access-key-id }}
+          GW_SECRET: ${{ steps.gw.outputs.aws-secret-access-key }}
+          GW_TOKEN: ${{ steps.gw.outputs.aws-session-token }}
+          PROD_KEY: ${{ steps.prod.outputs.aws-access-key-id }}
+          PROD_SECRET: ${{ steps.prod.outputs.aws-secret-access-key }}
+          PROD_TOKEN: ${{ steps.prod.outputs.aws-session-token }}
+        run: python3 .github/scripts/pipeline.py plan
+
+  checks:
+    name: Checks
+    needs: plan
+    uses: ./.github/workflows/_checks.yml
+    with:
+      ref: ${{ needs.plan.outputs.sha }}
+      branch: ${{ inputs.source }}
+
+  dev:
+    name: DEV
+    needs: [plan, checks]
     uses: ./.github/workflows/_deploy.yml
     with:
-      environment: production
-      aws_region:  us-east-1
-      role_arn:    ${{ vars.PROD_ROLE_ARN }}
-      ecr_role_arn: ${{ vars.PROD_ROLE_ARN }}      # prod-deploy-payments-role: pushes for every env (decision #17)
-      registry:    ${{ vars.PROD_REGISTRY }}       # shared repos live in the prod account
-      ecr_repo:    tpp-global-payments
-      image_tag:   global-payments-prod-latest
-      ecs_cluster: tpp-prod-ecs-cluster
+      environment: dev
+      aws_region: us-east-2
+      role_arn: ${{ vars.DEV_ROLE_ARN }}
+      ecr_role_arn: ${{ vars.PROD_ROLE_ARN }}
+      registry: ${{ vars.PROD_REGISTRY }}
+      ecr_repo: tpp-global-payments
+      image_tag: ${{ needs.plan.outputs.image_tag }}
+      extra_tags: ${{ needs.plan.outputs.extra_tags }}
+      labels: ${{ needs.plan.outputs.labels }}
+      checkout_ref: ${{ needs.plan.outputs.sha }}
+      ecs_cluster: tpp-dev-ecs-cluster
       ecs_service: tpp-global-payments
+      security_gate: false
+
+  qa-approval:
+    name: Approval for QA
+    needs: dev
+    runs-on: ubuntu-latest
+    environment: qa
+    steps:
+      - run: echo "QA approved"
+
+  qa:
+    name: QA
+    needs: [plan, qa-approval]
+    uses: ./.github/workflows/_stage.yml
+    with:
+      stage: qa
+      source: ${{ inputs.source }}
+      sha: ${{ needs.plan.outputs.sha }}
+      since: ${{ needs.plan.outputs.since }}
+
+  feature-stop:
+    name: Feature branch cannot go past QA
+    needs: qa
+    if: ${{ needs.qa.outputs.version == '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          SOURCE: ${{ inputs.source }}
+        run: |
+          MSG="$SOURCE is a feature branch, so it cannot be promoted to sandbox or prod. It is deployed to dev and QA for testing only. Merge it into main and run Deploy from main to release it."
+          echo "### Stopped: feature branch" >> "$GITHUB_STEP_SUMMARY"
+          echo "$MSG" >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::$MSG"
+          exit 1
+
+  # Approval jobs hold no AWS credentials, so naming the environment does not change the deploys' OIDC identity.
+  sandbox-approval:
+    name: Sandbox approval
+    needs: qa
+    if: ${{ needs.qa.outputs.version != '' }}
+    runs-on: ubuntu-latest
+    environment: sandbox
+    steps:
+      - run: echo "Sandbox approved for ${{ needs.qa.outputs.version }}"
+
+  sandbox:
+    name: SANDBOX
+    needs: [plan, qa, sandbox-approval]
+    uses: ./.github/workflows/_stage.yml
+    with:
+      stage: sandbox
+      source: ${{ inputs.source }}
+      sha: ${{ needs.plan.outputs.sha }}
+      since: ${{ needs.plan.outputs.since }}
+      version: ${{ needs.qa.outputs.version }}
+
+  prod-approval:
+    name: Prod approval
+    needs: [qa, sandbox]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - run: echo "Prod approved for ${{ needs.qa.outputs.version }}"
+
+  prod:
+    name: PROD
+    needs: [plan, qa, prod-approval]
+    uses: ./.github/workflows/_stage.yml
+    with:
+      stage: prod
+      source: ${{ inputs.source }}
+      sha: ${{ needs.plan.outputs.sha }}
+      since: ${{ needs.plan.outputs.since }}
+      version: ${{ needs.qa.outputs.version }}
+
+  where:
+    name: Deployment summary
+    needs: [plan, dev, qa, sandbox, prod]
+    if: ${{ always() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - uses: aws-actions/configure-aws-credentials@v4
+        id: gw
+        with:
+          role-to-assume: ${{ env.GATEWAY_ROLE }}
+          aws-region: us-east-2
+          output-credentials: true
+      - uses: aws-actions/configure-aws-credentials@v4
+        id: prod
+        with:
+          role-to-assume: ${{ env.PROD_ROLE }}
+          aws-region: us-east-1
+          output-credentials: true
+      - name: What runs where
+        env:
+          GW_KEY: ${{ steps.gw.outputs.aws-access-key-id }}
+          GW_SECRET: ${{ steps.gw.outputs.aws-secret-access-key }}
+          GW_TOKEN: ${{ steps.gw.outputs.aws-session-token }}
+          PROD_KEY: ${{ steps.prod.outputs.aws-access-key-id }}
+          PROD_SECRET: ${{ steps.prod.outputs.aws-secret-access-key }}
+          PROD_TOKEN: ${{ steps.prod.outputs.aws-session-token }}
+        run: python3 .github/scripts/pipeline.py where

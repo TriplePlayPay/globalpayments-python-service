@@ -1,0 +1,78 @@
+name: _checks
+
+on:
+  workflow_call:
+    inputs:
+      ref:    { type: string, required: true }   # commit to check
+      branch: { type: string, required: true }   # its branch; main and hotfix/* must pass Mend
+
+permissions:
+  contents: read
+  checks: read
+  pull-requests: read
+
+jobs:
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Dependencies
+        run: |
+          pip install poetry==1.8.3
+          poetry install --with dev --no-interaction
+      - name: Unit tests
+        run: poetry run python -m pytest
+
+  # Public repo: no self-hosted Mend agent, so this reads the Mend App's verdict on the commit's PR.
+  mend:
+    name: Mend (PR check)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mend Security Check of this commit's PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMIT: ${{ inputs.ref }}
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys, urllib.request
+
+          repo, commit, branch = os.environ["REPO"], os.environ["COMMIT"], os.environ["BRANCH"]
+          enforce = branch == "main" or branch.startswith("hotfix/")
+          name = "Mend Security Check"
+
+          def get(path):
+              req = urllib.request.Request("https://api.github.com/repos/%s/%s" % (repo, path), headers={
+                  "Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": "application/vnd.github+json"})
+              return json.load(urllib.request.urlopen(req, timeout=30))
+
+          def verdict():
+              pulls = [p for p in get("commits/%s/pulls" % commit) if p["merged_at"] or p["head"]["sha"] == commit]
+              if not pulls:
+                  return None, "no pull request found for %s; open one so Mend scans it" % commit[:8]
+              pr = pulls[0]
+              runs = [r for r in get("commits/%s/check-runs?per_page=100" % pr["head"]["sha"])["check_runs"] if r["name"] == name]
+              latest = max(runs, key=lambda r: r.get("started_at") or "", default=None)
+              if not latest or latest["conclusion"] not in ("success", "neutral"):
+                  return pr["number"], "%s=%s" % (name, latest["conclusion"] if latest else "missing")
+              return pr["number"], ""
+
+          pr, problem = verdict()
+          scope = "PR #%s" % pr if pr else "commit %s" % commit[:8]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write("### Mend (%s): %s\n\n%s: %s\n" % (branch, "passed" if not problem else (
+                  "FAILED" if enforce else "warning"), scope, problem or name + " passed"))
+          if not problem:
+              print("%s passed on %s" % (name, scope))
+          elif enforce:
+              sys.exit("::error::Mend blocked %s: %s (%s)" % (branch, problem, scope))
+          else:
+              print("::warning::Mend (feature branch, warn only): %s (%s)" % (problem, scope))
+          PY

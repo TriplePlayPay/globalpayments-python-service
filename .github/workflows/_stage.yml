@@ -1,0 +1,78 @@
+name: _stage
+
+on:
+  workflow_call:
+    inputs:
+      stage:   { type: string, required: true }   # qa | sandbox | prod
+      source:  { type: string, required: true }
+      sha:     { type: string, required: true }
+      since:   { type: string, required: true }
+      version: { type: string, required: false, default: '' }
+    outputs:
+      version:
+        value: ${{ jobs.plan.outputs.version }}
+
+permissions:
+  id-token: write
+  contents: read
+  checks: read
+  pull-requests: read
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    concurrency:
+      group: global-payments-plan-${{ inputs.stage }}
+    outputs:
+      image_tag: ${{ steps.plan.outputs.image_tag }}
+      promote_from: ${{ steps.plan.outputs.promote_from }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - uses: aws-actions/configure-aws-credentials@v4
+        id: gw
+        with:
+          role-to-assume: ${{ vars.DEV_ROLE_ARN }}
+          aws-region: us-east-2
+          output-credentials: true
+      - uses: aws-actions/configure-aws-credentials@v4
+        id: prod
+        with:
+          role-to-assume: ${{ vars.PROD_ROLE_ARN }}
+          aws-region: us-east-1
+          output-credentials: true
+      - name: Plan
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ inputs.source }}
+          SHA: ${{ inputs.sha }}
+          VERSION: ${{ inputs.version }}
+          GW_KEY: ${{ steps.gw.outputs.aws-access-key-id }}
+          GW_SECRET: ${{ steps.gw.outputs.aws-secret-access-key }}
+          GW_TOKEN: ${{ steps.gw.outputs.aws-session-token }}
+          PROD_KEY: ${{ steps.prod.outputs.aws-access-key-id }}
+          PROD_SECRET: ${{ steps.prod.outputs.aws-secret-access-key }}
+          PROD_TOKEN: ${{ steps.prod.outputs.aws-session-token }}
+        run: python3 .github/scripts/pipeline.py ${{ inputs.stage }}
+
+  # 'prod', not 'production': the approval job in the caller is the gate, so _deploy.yml must not ask again.
+  deploy:
+    name: Deploy
+    needs: plan
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: ${{ inputs.stage }}
+      aws_region: ${{ inputs.stage == 'prod' && 'us-east-1' || 'us-east-2' }}
+      role_arn: ${{ inputs.stage == 'prod' && vars.PROD_ROLE_ARN || vars.DEV_ROLE_ARN }}
+      ecr_role_arn: ${{ vars.PROD_ROLE_ARN }}
+      registry: ${{ vars.PROD_REGISTRY }}
+      ecr_repo: tpp-global-payments
+      image_tag: ${{ needs.plan.outputs.image_tag }}
+      promote_from_tag: ${{ needs.plan.outputs.promote_from }}
+      ecs_cluster: tpp-${{ inputs.stage }}-ecs-cluster
+      ecs_service: tpp-global-payments
+      security_gate: false

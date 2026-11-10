@@ -1,42 +1,5 @@
-# Reusable deploy workflow (per-repo copy — will be centralised later per ITPP-162).
-# Called once per environment by the deploy-*.yaml callers.
-#
-# ECR consolidation (ITPP-317): every environment now builds into ONE shared repo,
-# tpp-<service> in the TPP prod account (907119984749 / us-east-1). The environment is
-# carried in the TAG, not in the repo path or the account:
-#
-#   tpp-global-payments:global-payments-<env>-1.0.0.<run_number>
-#
-# The image is BUILT ONCE, by dev, and then promoted (decisions #4 and #26). Sandbox and prod do
-# not rebuild — they add their own tag to the digest dev produced and deploy that. So the artifact
-# that reaches production is literally the one that was tested, not a rebuild of the same commit.
-# Container builds are not reproducible, so a rebuild genuinely differs: our own dev and sandbox
-# base images, built ten seconds apart from identical source, have different digests.
-#
-#   merge -> dev builds  global-payments-dev-latest
-#              -> sandbox promotes that digest as global-payments-sandbox-latest
-#                   -> prod promotes it as global-payments-prod-latest (manual, gated)
-#
-# The version number N comes from the dev build and travels unchanged, so one number identifies
-# one artifact in every environment.
-#
-# Two roles are needed because the image and the service live in different accounts:
-#   ecr_role_arn -> prod account, used to push the image (all environments)
-#   role_arn     -> the environment's own account, used to roll ECS
-# dev/sandbox ECS pull the image cross-account; the repository policy and the task-exec role
-# policies for that are already applied.
-#
-# Tags are MOVING (-latest per environment). A deploy re-points the tag; the digest it moved
-# off goes untagged and the repo's 7-day lifecycle rule deletes it.
-#
-# Because the tag is fixed rather than moving, `force-new-deployment` can no longer pick up a
-# new image — it would just re-pull the same tag. The deploy step therefore registers a new
-# task-definition revision carrying the new image and points the service at it.
-# NOTE: this needs `ignore_task_definition_changes = true` on the service in infrastructure-v2,
-# otherwise the next terragrunt apply reverts the image. Pending Vikas (decision #23).
-#
-# The approval gate is enforced by GitHub Environments: only environment=production carries
-# required reviewers. Auth is OIDC only (no static keys).
+# Builds (or promotes) one image in the shared tpp-global-payments repo (prod account) and rolls the ECS service.
+# Version tags (<env>-1.0.0.N) are write-once; -latest style tags still move.
 
 name: _deploy
 
@@ -45,35 +8,39 @@ on:
     inputs:
       environment: { type: string, required: true }            # dev | sandbox | production
       aws_region:  { type: string, required: true }            # region of the ECS service
-      role_arn:    { type: string, required: true }            # environment's ECS deploy role
+      role_arn:    { type: string, required: true }            # environment ECS deploy role
       ecr_role_arn: { type: string, required: true }           # prod-account role used to push
       registry:    { type: string, required: true }            # prod account ECR registry
       ecr_repo:    { type: string, required: true }            # shared repo: tpp-global-payments
       ecr_region:  { type: string, required: false, default: 'us-east-1' }
       image_tag:   { type: string, required: true }            # global-payments-<env>-1.0.0.<n>
+      extra_tags:  { type: string, required: false, default: '' }  # comma-separated, build only
+      labels:      { type: string, required: false, default: '' }  # comma-separated key=value, build only
       promote_from_tag: { type: string, required: false, default: '' }  # set => promote, don't build
       base_image:  { type: string, required: false, default: '' }   # optional Docker build-arg
-      ecs_cluster: { type: string, required: false, default: '' }   # empty => skip ECS deploy
+      ecs_cluster: { type: string, required: false, default: '' }
       ecs_service: { type: string, required: false, default: '' }
+      checkout_ref: { type: string, required: false, default: '' }  # empty => the dispatched commit
+      security_gate: { type: boolean, required: false, default: true }
 
 jobs:
   deploy:
-    # amd64 runner with a genuine multi-arch build: X86_64 in dev/sandbox, ARM64 in prod, so both
-    # platforms are required. The arm64 half is QEMU-emulated and can rarely deadlock (a sibling
-    # repo's build hung ~6h on 2026-07-31 and died at GitHub's job ceiling.
+    name: ${{ inputs.promote_from_tag == '' && 'Build and roll out' || inputs.promote_from_tag == inputs.image_tag && 'Roll out' || 'Retag and roll out' }}
+    # Multi-arch: X86_64 in dev/qa/sandbox, ARM64 in prod. The arm64 half is QEMU-emulated and can rarely hang.
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     environment: ${{ inputs.environment == 'production' && 'production' || '' }}
     concurrency:
-      group: deploy-${{ inputs.environment }}-${{ github.repository }}
+      group: global-payments-deploy-${{ inputs.environment }}
     permissions:
-      id-token: write   # OIDC
+      id-token: write
       contents: read
       checks: read
       pull-requests: read
     steps:
       # Dev only warns; sandbox and production stop here unless the commit's PR passed the Mend App security check.
       - name: Security gate (PR checks of this commit)
+        if: ${{ inputs.security_gate }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -121,12 +88,14 @@ jobs:
 
       - uses: actions/checkout@v4
         if: ${{ inputs.promote_from_tag == '' }}
+        with:
+          ref: ${{ inputs.checkout_ref }}
 
       - name: Set up QEMU (enables the arm64 build on the amd64 runner)
         if: ${{ inputs.promote_from_tag == '' }}
         uses: docker/setup-qemu-action@v3
 
-      - name: Set up Docker Buildx (for --push straight to ECR)
+      - name: Set up Docker Buildx
         if: ${{ inputs.promote_from_tag == '' }}
         uses: docker/setup-buildx-action@v3
 
@@ -180,14 +149,25 @@ jobs:
           SRC_DIGEST=$(jq -r '.images[0].imageId.imageDigest' got.json)
           echo "source $REPO:${PROMOTE_FROM_TAG} = $SRC_DIGEST ($MEDIA)"
 
-          # Moving tags: if the destination already points at this digest it is a re-run —
-          # nothing to move. Any other digest gets re-pointed (the repo is mutable).
+          # If the destination already points at this digest it is a re-run, nothing to move.
+          # -latest style tags get re-pointed; 1.0.0.N tags never move to another image.
           CUR=$(aws ecr batch-get-image --region "$REGION" --repository-name "$REPO" \
             --image-ids imageTag="${IMAGE_TAG}" \
             --query 'images[0].imageId.imageDigest' --output text 2>/dev/null || true)
+          VERSIONED=$([[ "$IMAGE_TAG" =~ -1\.0\.0\.[0-9]+$ ]] && echo yes || true)
+          # Checked here, not only in the plan, because "Re-run failed jobs" skips the plan. Rollback promotes a tag onto itself.
+          if [ -n "$VERSIONED" ] && [ "$PROMOTE_FROM_TAG" != "$IMAGE_TAG" ]; then
+            ROLLED=$(aws ecr list-images --region "$REGION" --repository-name "$REPO" --filter tagStatus=TAGGED \
+              --query "imageIds[?imageDigest=='$SRC_DIGEST'].imageTag" --output text | tr '\t' '\n' | grep -- '-rolledback-' || true)
+            [ -z "$ROLLED" ] || { echo "::error::This image was rolled back ($ROLLED). Push a fix and start a new run."; exit 1; }
+          fi
           if [ "$CUR" = "$SRC_DIGEST" ]; then
             echo "${IMAGE_TAG} already points at $SRC_DIGEST — nothing to move."
             exit 0
+          fi
+          if [ -n "$VERSIONED" ] && [ -n "$CUR" ] && [ "$CUR" != "None" ]; then
+            echo "::error::${IMAGE_TAG} already belongs to another image ($CUR). Version numbers never move; start a new run."
+            exit 1
           fi
 
           aws ecr put-image --region "$REGION" --repository-name "$REPO" \
@@ -207,41 +187,38 @@ jobs:
       - name: Build & push (multi-arch amd64+arm64; ${{ inputs.image_tag }})
         if: ${{ inputs.promote_from_tag == '' }}
         env:
-          REGISTRY: ${{ inputs.registry }}
-          ECR_REPO: ${{ inputs.ecr_repo }}
+          IMAGE: ${{ inputs.registry }}/${{ inputs.ecr_repo }}
           BASE_IMAGE: ${{ inputs.base_image }}
           IMAGE_TAG: ${{ inputs.image_tag }}
+          EXTRA_TAGS: ${{ inputs.extra_tags }}
+          LABELS: ${{ inputs.labels }}
         run: |
           set -euo pipefail
-          IMG="${REGISTRY}/${ECR_REPO}"
-          BASE_ARG=""
-          if [ -n "${BASE_IMAGE}" ]; then
-            BASE_ARG="--build-arg BASE_IMAGE=${BASE_IMAGE}"
-          fi
-          docker buildx build . \
-            --platform=linux/amd64,linux/arm64 $BASE_ARG \
-            --provenance=false \
-            -t "$IMG:${IMAGE_TAG}" \
-            --push
+          ARGS=(-t "$IMAGE:$IMAGE_TAG")
+          IFS=, read -ra T <<<"$EXTRA_TAGS"; for t in "${T[@]}"; do ARGS+=(-t "$IMAGE:$t"); done
+          IFS=, read -ra L <<<"$LABELS"; for l in "${L[@]}"; do ARGS+=(--label "$l"); done
+          [ -z "$BASE_IMAGE" ] || ARGS+=(--build-arg "BASE_IMAGE=$BASE_IMAGE")
+          docker buildx build . --platform=linux/amd64,linux/arm64 --provenance=false "${ARGS[@]}" --push
 
       - name: Record the pushed digest
         if: ${{ inputs.promote_from_tag == '' }}
-        # batch-get-image, not describe-images: prod-deploy-payments-role can push and read
-        # manifests but has no ecr:DescribeImages, so describe-images fails with AccessDenied.
         env:
-          ECR_REGION: ${{ inputs.ecr_region }}
           ECR_REPO: ${{ inputs.ecr_repo }}
+          ECR_REGION: ${{ inputs.ecr_region }}
           IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           set -euo pipefail
+          REPO="${ECR_REPO}"
+          # batch-get-image, not describe-images: prod-deploy-payments-role can push and read
+          # manifests but has no ecr:DescribeImages, so describe-images fails with AccessDenied.
           DIGEST=$(aws ecr batch-get-image \
             --region "${ECR_REGION}" \
-            --repository-name "${ECR_REPO}" \
+            --repository-name "$REPO" \
             --image-ids imageTag="${IMAGE_TAG}" \
             --query 'images[0].imageId.imageDigest' --output text)
-          echo "Pushed ${ECR_REPO}:${IMAGE_TAG} => $DIGEST"
+          echo "Pushed $REPO:${IMAGE_TAG} => $DIGEST"
 
-      # ---- deploy phase: the environment's own account -----------------------------
+      # ---- deploy phase: the environment own account --------------------------------
       - name: Configure AWS credentials for ECS deploy (target account)
         if: ${{ inputs.ecs_cluster != '' && inputs.ecs_service != '' }}
         uses: aws-actions/configure-aws-credentials@v4
@@ -249,16 +226,51 @@ jobs:
           role-to-assume: ${{ inputs.role_arn }}
           aws-region: ${{ inputs.aws_region }}
 
+      # A late "Re-run failed jobs" skips the plan, so the older-over-newer check is repeated here. Rollback is exempt.
+      - name: Refuse an older version over a newer one
+        if: ${{ inputs.ecs_cluster != '' && inputs.ecs_service != '' && inputs.promote_from_tag != inputs.image_tag }}
+        env:
+          CLUSTER: ${{ inputs.ecs_cluster }}
+          SERVICE: ${{ inputs.ecs_service }}
+          REGION:  ${{ inputs.aws_region }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_TAG" =~ -1\.0\.0\.([0-9]+)$ ]] || exit 0
+          NEW_N="${BASH_REMATCH[1]}"
+          RUNNING_TD=$(aws ecs describe-services --region "$REGION" --cluster "$CLUSTER" \
+            --services "$SERVICE" --query 'services[0].taskDefinition' --output text)
+          PRIMARY=$(aws ecs describe-services --region "$REGION" --cluster "$CLUSTER" \
+            --services "$SERVICE" --query 'services[0].loadBalancers[0].containerName' --output text)
+          RUNNING_IMAGE=$(aws ecs describe-task-definition --region "$REGION" --task-definition "$RUNNING_TD" \
+            --query "taskDefinition.containerDefinitions[?name=='$PRIMARY'].image | [0]" --output text)
+          echo "running $RUNNING_IMAGE, deploying 1.0.0.$NEW_N"
+          if [[ "$RUNNING_IMAGE" =~ -1\.0\.0\.([0-9]+)$ ]] && [ "${BASH_REMATCH[1]}" -gt "$NEW_N" ]; then
+            echo "::error::$SERVICE already runs 1.0.0.${BASH_REMATCH[1]}, newer than 1.0.0.$NEW_N. Start a new run, or use rollback to go back."
+            exit 1
+          fi
+
       - name: Deploy to ECS (register a new task-def revision, then roll)
+        id: rollout
         if: ${{ inputs.ecs_cluster != '' && inputs.ecs_service != '' }}
         env:
           CLUSTER: ${{ inputs.ecs_cluster }}
           SERVICE: ${{ inputs.ecs_service }}
           REGION:  ${{ inputs.aws_region }}
           NEW_IMAGE: ${{ inputs.registry }}/${{ inputs.ecr_repo }}:${{ inputs.image_tag }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
           echo "== $SERVICE on $CLUSTER -> $NEW_IMAGE =="
+
+          # Released images carry 1.0.0.N from QA on; dev and feature images show their branch and commit.
+          if [[ "$IMAGE_TAG" =~ -1\.0\.0\.([0-9]+)$ ]]; then
+            BUILD_NUMBER="${BASH_REMATCH[1]}"; DD_VERSION="1.0.0.$BUILD_NUMBER"
+          else
+            BUILD_NUMBER="$RUN_NUMBER"; DD_VERSION=$(sed -E 's/^.*-(dev|qa)-//' <<<"$IMAGE_TAG")
+          fi
+          echo "Datadog version=$DD_VERSION buildnumber=$BUILD_NUMBER"
 
           # Base the new revision on the FAMILY'S latest ACTIVE revision, not the revision the
           # service happens to be running. Terraform registers config changes (memory, env vars)
@@ -279,19 +291,27 @@ jobs:
             echo "::warning::DRIFT: service runs ${RUNNING_TD##*/} but family latest is $LATEST_TD — basing on latest"
           fi
 
-          # The load-balanced container is the service's primary one. Some services also run a
-          # task-lifetime sidecar built from the SAME image, so every container currently using
-          # the primary's image is updated together; sidecars on other images (the log router)
-          # are left alone.
+          # The load-balanced container is the primary one. Some services also run a task-lifetime
+          # sidecar built from the SAME image, so every container currently using the primary
+          # image is updated together; sidecars on other images (the log router) are left alone.
           PRIMARY=$(aws ecs describe-services --region "$REGION" --cluster "$CLUSTER" \
             --services "$SERVICE" --query 'services[0].loadBalancers[0].containerName' --output text)
           OLD_IMAGE=$(jq -r --arg C "$PRIMARY" \
             '.containerDefinitions[] | select(.name==$C) | .image' td.json)
           echo "primary container=$PRIMARY  old image=$OLD_IMAGE"
 
-          # Drop the read-only fields describe-task-definition returns; register the rest.
+          # DD_TAGS stays space-separated, as Terraform writes it.
           jq --arg OLD "$OLD_IMAGE" --arg NEW "$NEW_IMAGE" \
-            '.containerDefinitions |= map(if .image == $OLD then .image = $NEW else . end)
+             --arg PRIMARY "$PRIMARY" --arg VER "$DD_VERSION" --arg BN "$BUILD_NUMBER" \
+            '.containerDefinitions |= map(
+               (if .image == $OLD then .image = $NEW else . end)
+               | if (.name == $PRIMARY or .name == "datadog-agent") then
+                   .environment = ([ (.environment // [])[] | select(.name != "DD_VERSION")
+                     | if .name == "DD_TAGS" then .value = ([ .value | splits("[ ,]+") ]
+                         | map(select(length > 0 and (startswith("buildnumber:") | not)))
+                         | . + ["buildnumber:" + $BN] | join(" ")) else . end ]
+                     + [ {name: "DD_VERSION", value: $VER} ])
+                 else . end)
              | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
                    .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)' \
             td.json > td-new.json
@@ -323,3 +343,40 @@ jobs:
           echo "live task definition = $LIVE_TD"
           [ "$LIVE_TD" = "$NEW_TD" ] || { echo "ROLLED BACK: live is $LIVE_TD, expected $NEW_TD"; exit 1; }
           echo "$SERVICE is live on $NEW_TD (image $NEW_IMAGE)"
+
+      - name: Configure AWS credentials to mark a failed rollout (prod account)
+        if: ${{ always() && (steps.rollout.outcome == 'failure' || steps.rollout.outcome == 'cancelled') }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.ecr_role_arn }}
+          aws-region: ${{ inputs.ecr_region }}
+
+      # The version tag was written before the rollout; the mark lets rollback skip a version that never ran here.
+      - name: Mark the version whose rollout failed
+        if: ${{ always() && (steps.rollout.outcome == 'failure' || steps.rollout.outcome == 'cancelled') }}
+        env:
+          ECR_REPO: ${{ inputs.ecr_repo }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          ECR_REGION: ${{ inputs.ecr_region }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_TAG" =~ ^(.+)-1\.0\.0\.([0-9]+)$ ]] || { echo "not a version tag, nothing to mark"; exit 0; }
+          MARK="${BASH_REMATCH[1]}-failed-1.0.0.${BASH_REMATCH[2]}"
+          REPO="${ECR_REPO}"
+          aws ecr batch-get-image --region "$ECR_REGION" --repository-name "$REPO" \
+            --image-ids imageTag="${IMAGE_TAG}" \
+            --accepted-media-types \
+              "application/vnd.oci.image.index.v1+json" \
+              "application/vnd.docker.distribution.manifest.list.v2+json" \
+              "application/vnd.oci.image.manifest.v1+json" \
+              "application/vnd.docker.distribution.manifest.v2+json" \
+            --output json > mark.json
+          SRC=$(jq -r '.images[0].imageId.imageDigest' mark.json)
+          CUR=$(aws ecr batch-get-image --region "$ECR_REGION" --repository-name "$REPO" \
+            --image-ids imageTag="$MARK" --query 'images[0].imageId.imageDigest' --output text 2>/dev/null || true)
+          [ "$CUR" != "$SRC" ] || { echo "$MARK already set"; exit 0; }
+          jq -j '.images[0].imageManifest' mark.json > mark-manifest.json
+          aws ecr put-image --region "$ECR_REGION" --repository-name "$REPO" --image-tag "$MARK" \
+            --image-manifest file://mark-manifest.json \
+            --image-manifest-media-type "$(jq -r '.images[0].imageManifestMediaType' mark.json)" >/dev/null
+          echo "::warning::Rollout of ${IMAGE_TAG} did not finish; marked $MARK so rollback skips it"
